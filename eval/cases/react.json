@@ -1,0 +1,227 @@
+{
+  "step": "react",
+  "note": "Each case carries the channel history that precedes it. History matters: the same message is a different decision depending on who spoke last and who was named earlier. `from: \"agent\"` marks the agent's own messages.",
+  "cases": [
+    {
+      "id": "named-direct",
+      "note": "Settled in code. Should never reach the model.",
+      "history": [
+        {
+          "from": "olav",
+          "text": "morning"
+        }
+      ],
+      "message": {
+        "from": "olav",
+        "text": "harness, what node version does this project target?"
+      },
+      "expect": true
+    },
+    {
+      "id": "named-alongside-other",
+      "note": "Being named wins even when someone else is also mentioned.",
+      "history": [
+        {
+          "from": "olav",
+          "text": "@dana pushed a fix"
+        }
+      ],
+      "message": {
+        "from": "olav",
+        "text": "harness, can you check what dana pushed?"
+      },
+      "expect": true
+    },
+    {
+      "id": "bare-ack-immediate",
+      "note": "none_immediate. Closes the exchange, wants nothing back.",
+      "history": [
+        {
+          "from": "olav",
+          "text": "what node version does this project target?"
+        },
+        {
+          "from": "agent",
+          "text": "Node 22 or newer."
+        }
+      ],
+      "message": {
+        "from": "olav",
+        "text": "thanks, that worked"
+      },
+      "expect": false
+    },
+    {
+      "id": "answers-agent-question",
+      "note": "none_immediate. The agent asked; this supplies it.",
+      "history": [
+        {
+          "from": "olav",
+          "text": "what node version does this target?"
+        },
+        {
+          "from": "agent",
+          "text": "Which repository are we looking at?"
+        }
+      ],
+      "message": {
+        "from": "olav",
+        "text": "the multiharness one"
+      },
+      "expect": true
+    },
+    {
+      "id": "open-question-absent",
+      "note": "none_absent. No name attached, agent not in the thread. Open to it.",
+      "history": [
+        {
+          "from": "olav",
+          "text": "deploy went out"
+        },
+        {
+          "from": "dana",
+          "text": "nice"
+        }
+      ],
+      "message": {
+        "from": "olav",
+        "text": "does anyone know why the build got slow?"
+      },
+      "expect": true
+    },
+    {
+      "id": "open-question-recent",
+      "note": "none_recent. Having spoken earlier does not disqualify it from an open question.",
+      "history": [
+        {
+          "from": "olav",
+          "text": "what node version?"
+        },
+        {
+          "from": "agent",
+          "text": "Node 22 or newer."
+        },
+        {
+          "from": "dana",
+          "text": "cool, I'll bump the CI image"
+        }
+      ],
+      "message": {
+        "from": "olav",
+        "text": "does anyone know why the build got slow?"
+      },
+      "expect": true
+    },
+    {
+      "id": "addressed-to-other",
+      "note": "other_*. A request to Dana. Being able to answer is not being asked.",
+      "history": [
+        {
+          "from": "olav",
+          "text": "what node version?"
+        },
+        {
+          "from": "agent",
+          "text": "Node 22 or newer."
+        }
+      ],
+      "message": {
+        "from": "olav",
+        "text": "@dana can you take a look at the deploy when you get a chance?"
+      },
+      "expect": false
+    },
+    {
+      "id": "third-party-chatter",
+      "note": "other_*. From Dana, about Dana's work. Not the agent's.",
+      "history": [
+        {
+          "from": "olav",
+          "text": "@dana can you look at the deploy?"
+        },
+        {
+          "from": "dana",
+          "text": "on it"
+        }
+      ],
+      "message": {
+        "from": "dana",
+        "text": "dana: I pushed the fix, should be green now"
+      },
+      "expect": false
+    },
+    {
+      "id": "asked-about-other",
+      "note": "other_recent. KNOWN UNSTABLE. The verb points at the agent \u2014 it is asked ABOUT Dana, not addressed TO her.",
+      "history": [
+        {
+          "from": "olav",
+          "text": "what node version?"
+        },
+        {
+          "from": "agent",
+          "text": "Node 22 or newer."
+        },
+        {
+          "from": "olav",
+          "text": "@dana can you take a look at the deploy?"
+        }
+      ],
+      "message": {
+        "from": "olav",
+        "text": "do you think dana would agree with that?"
+      },
+      "expect": true
+    },
+    {
+      "id": "other-thread-absent",
+      "note": "other_absent. Two other people, agent never spoke. Default is silence.",
+      "history": [
+        {
+          "from": "olav",
+          "text": "@dana the staging box is down"
+        },
+        {
+          "from": "dana",
+          "text": "looking"
+        }
+      ],
+      "message": {
+        "from": "olav",
+        "text": "@dana did you see ops' message about the restart?"
+      },
+      "expect": false
+    },
+    {
+      "id": "late-reply-to-agent",
+      "note": "Discriminates judgement from position: the agent answered five messages ago and two other people have talked since, so distance says `recent` while the reply target says `agent`. The reply genuinely picks up the agent's answer.",
+      "history": [
+        {
+          "from": "olav",
+          "text": "what node version does this project target?"
+        },
+        {
+          "from": "agent",
+          "text": "Node 22 or newer \u2014 it needs native type stripping."
+        },
+        {
+          "from": "dana",
+          "text": "unrelated: staging box is back up"
+        },
+        {
+          "from": "kim",
+          "text": "nice, I'll redeploy"
+        },
+        {
+          "from": "dana",
+          "text": "thanks"
+        }
+      ],
+      "message": {
+        "from": "olav",
+        "text": "native type stripping \u2014 is that why the parameter properties broke?"
+      },
+      "expect": true
+    }
+  ]
+}

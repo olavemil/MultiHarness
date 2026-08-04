@@ -1,0 +1,116 @@
+{
+  "step": "reflect",
+  "note": "Each case supplies the previous session's sealed output as `prior`, plus the history and the message that opens the new session. `expect` is the signal reflect should read. `expectNoRecommendations` asserts that reflect kept quiet — inventing course-correction is the failure that compounds, because the next session reads it.",
+  "cases": [
+    {
+      "id": "new-subject",
+      "note": "A different question entirely. Says nothing about the last answer.",
+      "prior": {
+        "review": "# Review\n\n**Quality:** 4/5\n\nAnswered the version question directly and briefly.\n\n## Recommendations\n\n_(none)_",
+        "summary": "# Session summary\n\nSession 000001 · 2 steps before this summary · 12.1s so far\n\n| step | topic | duration | notes |\n| --- | --- | --- | --- |\n| react | — | 1.4s | react_1 |\n| respond | — | 8.2s | respond_1 |",
+        "reflection": ""
+      },
+      "history": [
+        { "from": "olav", "text": "what node version does this target?" },
+        { "from": "agent", "text": "Node 22 or newer." }
+      ],
+      "message": { "from": "olav", "text": "unrelated — do you know if the staging box has been rebooted?" },
+      "expect": "no_signal",
+      "expectNoRecommendations": true
+    },
+    {
+      "id": "bare-thanks",
+      "note": "Politeness, not endorsement. Must not be read as a verdict.",
+      "prior": {
+        "review": "# Review\n\n**Quality:** 4/5\n\nGave the version and the reason in two sentences.\n\n## Recommendations\n\n_(none)_",
+        "summary": "# Session summary\n\n| step | topic | duration | notes |\n| --- | --- | --- | --- |\n| react | — | 1.2s | react_1 |",
+        "reflection": ""
+      },
+      "history": [
+        { "from": "olav", "text": "what node version?" },
+        { "from": "agent", "text": "Node 22 or newer — it needs native type stripping." }
+      ],
+      "message": { "from": "olav", "text": "thanks" },
+      "expect": "no_signal",
+      "expectNoRecommendations": true
+    },
+    {
+      "id": "acts-on-answer",
+      "note": "The user used the answer and reports it working. A real positive signal.",
+      "prior": {
+        "review": "# Review\n\n**Quality:** 4/5\n\nSuggested pinning the engines field.\n\n## Recommendations\n\n_(none)_",
+        "summary": "# Session summary\n\n| step | topic | duration | notes |\n| --- | --- | --- | --- |\n| respond | — | 7.9s | respond_1 |",
+        "reflection": ""
+      },
+      "history": [
+        { "from": "olav", "text": "CI keeps picking node 20, how do I pin it?" },
+        { "from": "agent", "text": "Set the engines field in package.json and add a .nvmrc." }
+      ],
+      "message": { "from": "olav", "text": "that did it — CI is green now, thanks for the .nvmrc tip" },
+      "expect": "satisfied"
+    },
+    {
+      "id": "explicit-negative",
+      "note": "States plainly that the answer did not work. Course-correction is warranted here.",
+      "prior": {
+        "review": "# Review\n\n**Quality:** 4/5\n\nExplained the strip-only restriction.\n\n## Recommendations\n\n_(none)_",
+        "summary": "# Session summary\n\n| step | topic | duration | notes |\n| --- | --- | --- | --- |\n| respond | — | 9.1s | respond_1 |",
+        "reflection": ""
+      },
+      "history": [
+        { "from": "olav", "text": "why does the daemon crash on startup?" },
+        { "from": "agent", "text": "Node's strip-only mode rejects enums — remove them." }
+      ],
+      "message": { "from": "olav", "text": "there are no enums in the file and it still crashes with the same error" },
+      "expect": "dissatisfied"
+    },
+    {
+      "id": "repeats-question",
+      "note": "Asking again is itself the signal that the first answer missed.",
+      "prior": {
+        "review": "# Review\n\n**Quality:** 3/5\n\nCovered the general approach without naming a version.\n\n## Recommendations\n\n_(none)_",
+        "summary": "# Session summary\n\n| step | topic | duration | notes |\n| --- | --- | --- | --- |\n| respond | — | 8.4s | respond_1 |",
+        "reflection": ""
+      },
+      "history": [
+        { "from": "olav", "text": "what node version does this project target?" },
+        { "from": "agent", "text": "It depends on the features in use; check the engines field and your CI config." }
+      ],
+      "message": { "from": "olav", "text": "right, but what version does it target?" },
+      "expect": "dissatisfied"
+    },
+    {
+      "id": "third-party-exchange",
+      "note": "Two other people talking. Carries no verdict on the agent at all.",
+      "prior": {
+        "review": "# Review\n\n**Quality:** 4/5\n\nAnswered the build question.\n\n## Recommendations\n\n_(none)_",
+        "summary": "# Session summary\n\n| step | topic | duration | notes |\n| --- | --- | --- | --- |\n| respond | — | 6.8s | respond_1 |",
+        "reflection": ""
+      },
+      "history": [
+        { "from": "olav", "text": "why is the build slow?" },
+        { "from": "agent", "text": "The type-check runs twice; the second run is redundant." },
+        { "from": "dana", "text": "@kim can you take the staging rotation this week?" }
+      ],
+      "message": { "from": "kim", "text": "@dana sure, I'll pick it up from Wednesday" },
+      "expect": "no_signal",
+      "expectNoRecommendations": true
+    },
+    {
+      "id": "prior-reflection-carried",
+      "note": "A previous reflection already asked for brevity and the user is content. Nothing new to add.",
+      "prior": {
+        "review": "# Review\n\n**Quality:** 5/5\n\nShort and direct, as the last reflection asked for.\n\n## Recommendations\n\n_(none)_",
+        "summary": "# Session summary\n\n| step | topic | duration | notes |\n| --- | --- | --- | --- |\n| respond | — | 5.2s | respond_1 |",
+        "reflection": "# Reflection\n\n**Signal from the last exchange:** dissatisfied\n\nThe answer buried the version behind three paragraphs of context.\n\n## Do this session\n\n- Give the version number first, then the reasoning"
+      },
+      "history": [
+        { "from": "olav", "text": "and the minimum for type stripping?" },
+        { "from": "agent", "text": "22.18." }
+      ],
+      "message": { "from": "olav", "text": "got it. separate thing — is sqlite-vec packaged for arm64?" },
+      "expect": "no_signal",
+      "expectNoRecommendations": true
+    }
+  ]
+}

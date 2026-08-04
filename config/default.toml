@@ -1,0 +1,164 @@
+# MultiHarness default configuration.
+#
+# This file ships with the repo and holds no agent or session data. Override any
+# subset of it with a user config and point $MULTIHARNESS_CONFIG at that file;
+# tables merge key by key, arrays replace wholesale.
+
+working_dir = "~/.multiharness"
+
+# Who the agent is. Without this, no step can distinguish a message addressed to
+# the agent from one addressed to another participant in the same channel.
+[agent]
+name = "harness"
+aliases = ["@harness"]
+
+[ollama]
+host = "http://127.0.0.1:11434"
+request_timeout_ms = 300000
+
+# --- Model roles -------------------------------------------------------------
+# The only place a concrete model id appears. Replace PLACEHOLDER with the tags
+# you have actually pulled (`ollama list`).
+
+# Mechanical work: the react decision, the knowledge gatekeeper, status replies.
+# Pinned, because it sits on the latency path.
+#
+# Measured on the react decision (5 addressed/not-addressed cases, warm):
+#   phi3.5:3.8b  2/5 at 0.7s  — does not read; treats any @mention as itself
+#   qwen3.5:9b   5/5 at 47s   — accurate but thinking is on, far too slow here
+#   phi4:latest  5/5 at 1.7s  — the only one that is both
+# phi3.5 remains pulled and is the right choice if this role ever moves to work
+# that is genuinely mechanical rather than a judgement call.
+[roles.fast]
+model = "phi4:latest"
+keep_alive = -1
+[roles.fast.options]
+temperature = 0.2
+num_ctx = 8192
+
+# Primary in-step worker. Pinned: at 17 GB it sits well inside the ~36 GB Metal
+# ceiling alongside fast and embed, and letting it unload costs ~60s of reload
+# on the first reasoning step of every cold session.
+[roles.reasoning]
+model = "qwen3.6:27b"
+keep_alive = -1
+[roles.reasoning.options]
+temperature = 0.7
+num_ctx = 16384
+
+# Same weights as `reasoning` with thinking disabled — no second large model in
+# memory. Tool access is refused by the harness, not merely discouraged in the
+# prompt. Re-splitting this to a dedicated model later is a change to this table
+# alone.
+[roles.digest]
+model = "qwen3.6:27b"
+think = false
+no_tools = true
+[roles.digest.options]
+temperature = 0.4
+num_ctx = 16384
+
+# Gatekeeper prefilter. Unused until the knowledge store lands. The 0.6b sits
+# resident for well under a gigabyte; qwen3-embedding:4b (2.5 GB) is available
+# if retrieval quality turns out to matter more than the memory.
+[roles.embed]
+model = "qwen3-embedding:0.6b"
+keep_alive = -1
+
+# --- Context -----------------------------------------------------------------
+# Budgets are per named block, in approximate tokens. They exist for answer
+# quality — local attention degrades well before the nominal window — not to
+# avoid running out of memory.
+
+[context]
+default_budget_tokens = 800
+
+[context.budgets]
+recent_messages = 1500
+# Ids and timestamps cost tokens; the window is capped at 12 messages so the
+# budget should not normally bite. If it does, ids get dropped from the head and
+# a step referencing them would see fewer than it was told about.
+message_window = 2000
+user_summary = 400
+prior_step_output = 2000
+last_review = 700
+last_session_summary = 500
+last_reflection = 700
+reflection = 700
+incoming_message = 600
+
+# --- Session -----------------------------------------------------------------
+
+[session]
+reflect_step = "reflect"
+entry_step = "react"
+# Optional preparatory steps react may choose between. Empty for now: with no
+# research or reasoning steps built yet, react decides only whether to reply.
+# Adding "research" here plus a step file and a prompt is the whole change.
+selectable_steps = []
+respond_step = "respond"
+closing_steps = ["summarize", "review"]
+max_wallclock_ms = 900000
+# Route situations on "which message is this replying to?" rather than on how
+# many messages back the agent last spoke.
+#
+# On, on evidence. `late-reply-to-agent` — someone answering the agent after two
+# other people have talked — scores 5/5 with this on and 3/5 with it off, at
+# n=5. Distance routes that to `none_recent`; the reply target routes it to
+# `none_immediate`, which is what it actually is. That pattern is common in a
+# real channel.
+#
+# It costs a second fast call, taking the react decision from ~2.7s to ~5s. One
+# case at n=5 is suggestive rather than conclusive; re-measure if the latency
+# starts to matter.
+reply_target = true
+
+# --- Per-step overrides ------------------------------------------------------
+# Each step declares its own default role; these entries override it.
+
+[steps.react]
+role = "fast"
+timeout_ms = 30000
+
+[steps.respond]
+role = "reasoning"
+# Thinking dominates wallclock on this model — ~75s of reasoning for a ~45-token
+# chat reply — and ollama excludes it from eval_count, so it is invisible in the
+# token figures. Writing a reply from work earlier steps already did does not
+# need it. Leave it enabled on the role itself for `reason` and `research` when
+# those land; turn it back on here if replies get noticeably worse.
+think = false
+
+[steps.reflect]
+role = "digest"
+
+[steps.knowledge_gatekeeper]
+role = "fast"
+timeout_ms = 30000
+
+[steps.reply_target]
+role = "fast"
+timeout_ms = 30000
+
+[steps.review]
+role = "digest"
+
+# --- Weighted participation ---------------------------------------------------
+# Damps the agent's tendency to dominate a channel. Each reply can look locally
+# justified while the agent still talks far more than its share; only a view
+# across the window can see that. Off by default — enabling it makes the
+# decision stochastic, so run `npm run eval` with it disabled when judging a
+# prompt change.
+
+[session.participation]
+enabled = false
+base = 0.3
+mention = 1.0
+followup_multiplier = 2.5
+model_yes_multiplier = 1.5
+model_no_multiplier = 0.5
+presence_window = 12
+participant_window = 24
+damping_min = 0.25
+damping_max = 2.0
+max = 1.0

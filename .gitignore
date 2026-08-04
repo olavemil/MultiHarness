@@ -1,0 +1,12 @@
+node_modules/
+
+# Agent and session data never live in the repo — the working directory is
+# external and configurable. This is a backstop, not the mechanism.
+/knowledge/
+/files/
+/sessions/
+/channels/
+/identities/
+
+.DS_Store
+*.log
