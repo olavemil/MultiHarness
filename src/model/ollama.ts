@@ -8,16 +8,34 @@
 
 export type OptionValue = number | string | boolean;
 
+export interface ToolCall {
+  function: { name: string; arguments: Record<string, unknown> };
+}
+
 export interface ChatMessage {
-  role: "system" | "user" | "assistant";
+  role: "system" | "user" | "assistant" | "tool";
   content: string;
+  /** Present on assistant turns that asked for tools. */
+  tool_calls?: ToolCall[];
+  /** Names the tool a `role: "tool"` message is answering. */
+  tool_name?: string;
+}
+
+/** Ollama's function-calling declaration. */
+export interface ToolSpec {
+  type: "function";
+  function: { name: string; description: string; parameters: unknown };
 }
 
 export interface ChatRequest {
   model: string;
   messages: ChatMessage[];
-  /** JSON Schema for constrained decoding. */
+  /**
+   * JSON Schema for constrained decoding. Mutually exclusive with `tools` in
+   * practice: forcing the output shape leaves no room for a tool call.
+   */
   format?: unknown;
+  tools?: ToolSpec[];
   options?: Record<string, OptionValue>;
   keepAlive?: number | string;
   think?: boolean;
@@ -25,6 +43,8 @@ export interface ChatRequest {
 
 export interface ChatResult {
   content: string;
+  /** Tools the model asked for on this turn. Empty when it answered directly. */
+  toolCalls: ToolCall[];
   /**
    * Reasoning emitted before the answer, when the model has thinking enabled.
    * Streamed on a separate field and excluded from `eval_count`, so a step can
@@ -46,7 +66,7 @@ export interface ChatCallOptions {
 }
 
 interface StreamChunk {
-  message?: { content?: string; thinking?: string };
+  message?: { content?: string; thinking?: string; tool_calls?: ToolCall[] };
   done?: boolean;
   prompt_eval_count?: number;
   eval_count?: number;
@@ -89,6 +109,7 @@ export async function chat(
     stream: true,
   };
   if (request.format !== undefined) body["format"] = request.format;
+  if (request.tools !== undefined && request.tools.length > 0) body["tools"] = request.tools;
   if (request.options !== undefined) body["options"] = request.options;
   if (request.keepAlive !== undefined) body["keep_alive"] = request.keepAlive;
   if (request.think !== undefined) body["think"] = request.think;
@@ -115,6 +136,7 @@ export async function chat(
 
   let content = "";
   let thinking = "";
+  const toolCalls: ToolCall[] = [];
   let promptTokens = 0;
   let responseTokens = 0;
 
@@ -129,6 +151,8 @@ export async function chat(
       }
       const reasoning = chunk.message?.thinking;
       if (reasoning) thinking += reasoning;
+
+      if (chunk.message?.tool_calls) toolCalls.push(...chunk.message.tool_calls);
 
       if (chunk.done) {
         promptTokens = chunk.prompt_eval_count ?? 0;
@@ -152,6 +176,7 @@ export async function chat(
 
   return {
     content,
+    toolCalls,
     thinking,
     model: request.model,
     promptTokens,

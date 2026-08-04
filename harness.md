@@ -85,7 +85,7 @@ On code style specifically
 
 ## Concepts
 
-A session is bokkended by meta thinking:
+A session is bookended by meta thinking:
 - reflection looks to interpret the users satisfaction with a prior answer, and give instructions to itself for how to adjust course going forward (or to judge whether the message was not a feedback, but an unrelated question). It should handle multiple users talking about different topics in the meantime, and ideally look at the last few messages since multiple can have arrived in the meantime. Pay special attention to @mention's of the agent by name.
 - review looks to evaluate the session after the fact, to judge how fast it managed to respond, the quality of it, and how it feels about the question and response.
 

@@ -1,0 +1,100 @@
+{
+  "step": "knowledge_gatekeeper",
+  "note": "`store` seeds pre-existing entries, embedded for real so the prefilter behaves as it does live. `message.text` is the candidate. `expect` is the verdict.\n\nExpectations here were chosen deliberately, not assumed. Two subjects that share vocabulary are not automatically the same subject: `docker networking` absorbing bridge-vs-host detail is clear, but a NAT-latency fact and a macOS-VM-architecture fact are arguably distinct, so no case asserts those must merge. Cases where the right answer is genuinely debatable are left out rather than encoded as truth.",
+  "cases": [
+    {
+      "id": "append-same-subject",
+      "note": "Squarely the subject the entry already covers. If this does not append, nothing will.",
+      "store": [
+        {
+          "topic": "docker networking",
+          "summary": "Docker network drivers: bridge, host, and how they differ",
+          "seed": "Docker supports several network drivers. Host mode shares the host network namespace directly."
+        }
+      ],
+      "history": [],
+      "message": { "from": "research", "text": "Bridge is Docker's default network driver, used when no driver is specified." },
+      "expect": "append"
+    },
+    {
+      "id": "append-adds-detail",
+      "note": "A new angle on the same subject is still the same subject.",
+      "store": [
+        {
+          "topic": "type stripping",
+          "summary": "Node's strip-only TypeScript execution and what it refuses",
+          "seed": "Node can execute TypeScript directly by stripping type annotations, without a build step."
+        }
+      ],
+      "history": [],
+      "message": { "from": "research", "text": "Strip-only mode rejects TypeScript syntax that needs code generation: enums, namespaces, and parameter properties." },
+      "expect": "append"
+    },
+    {
+      "id": "new-unrelated-subject",
+      "note": "Shares no subject with anything stored, however many entries exist.",
+      "store": [
+        {
+          "topic": "docker networking",
+          "summary": "Docker network drivers: bridge, host, and how they differ",
+          "seed": "Docker supports several network drivers. Host mode shares the host network namespace."
+        }
+      ],
+      "history": [],
+      "message": { "from": "research", "text": "SQLite's FTS5 extension ships with the standard amalgamation and needs no separate install." },
+      "expect": "new"
+    },
+    {
+      "id": "new-empty-store",
+      "note": "Nothing to overlap with; the shortlist is empty.",
+      "store": [],
+      "history": [],
+      "message": { "from": "research", "text": "Metal caps GPU-wired memory at roughly 75% of system RAM on Macs above 36 GB." },
+      "expect": "new"
+    },
+    {
+      "id": "reject-conversation-state",
+      "note": "Who said what is not a durable fact about a subject.",
+      "store": [
+        {
+          "topic": "type stripping",
+          "summary": "Node's strip-only TypeScript execution",
+          "seed": "Node can execute TypeScript directly by stripping type annotations."
+        }
+      ],
+      "history": [],
+      "message": { "from": "research", "text": "olav asked what Node version the project targets and said he would check the engines field." },
+      "expect": "reject"
+    },
+    {
+      "id": "reject-vague",
+      "note": "True of almost anything, findable by nobody.",
+      "store": [],
+      "history": [],
+      "message": { "from": "research", "text": "There are several considerations worth keeping in mind when making decisions here." },
+      "expect": "reject"
+    },
+    {
+      "id": "reject-already-stated",
+      "note": "Adds nothing the entry does not already say.",
+      "store": [
+        {
+          "topic": "metal memory ceiling",
+          "summary": "Metal caps GPU-wired memory at about 75% of system RAM above 36 GB",
+          "seed": "On Apple Silicon Macs with more than 36 GB of RAM, Metal limits GPU-wired memory to roughly 75% of total system memory."
+        }
+      ],
+      "history": [],
+      "message": { "from": "research", "text": "Metal limits GPU memory to about 75% of system RAM on Macs with more than 36 GB." },
+      "expect": "reject"
+    },
+    {
+      "id": "reject-task-list",
+      "note": "A plan, not knowledge. The store is not a todo list.",
+      "store": [],
+      "history": [],
+      "message": { "from": "research", "text": "Next steps are to build the eval suite, then wire the tools, then look at the Slack adapter." },
+      "expect": "reject"
+    }
+  ]
+}

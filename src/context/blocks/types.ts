@@ -12,6 +12,8 @@ export interface BlockInput {
   completed: readonly CompletedStep[];
   /** The previous session in this channel. Absent on the first one. */
   prior?: PriorSession | undefined;
+  /** Accumulated impressions of `identity`, oldest first. */
+  impressions?: readonly { text: string }[] | undefined;
 }
 
 /**

@@ -11,6 +11,11 @@ import {
 } from "../src/knowledge/store.ts";
 import { cosine } from "../src/knowledge/similarity.ts";
 import { writeKnowledge } from "../src/knowledge/gatekeeper.ts";
+import {
+  appendImpression,
+  impressionCount,
+  readImpressions,
+} from "../src/knowledge/impressions.ts";
 import { embedding, mockOllama, reply, type MockReply } from "./helpers/mockOllama.ts";
 import { testConfig } from "./helpers/fixtures.ts";
 
@@ -252,5 +257,54 @@ describe("gatekeeper", () => {
     } finally {
       await server.close();
     }
+  });
+});
+
+describe("impressions", () => {
+  it("accumulates one exchange at a time, never rewriting", () => {
+    const db = openMemoryDb();
+    appendImpression(db, "olav", "olav", "asked a follow-up about the reasoning", {
+      session: "1", step: "reflect",
+    });
+    appendImpression(db, "olav", "olav", "moved straight past the detail", {
+      session: "2", step: "reflect",
+    });
+
+    expect(readImpressions(db, "olav").map((i) => i.text)).toEqual([
+      "asked a follow-up about the reasoning",
+      "moved straight past the detail",
+    ]);
+    expect(impressionCount(db, "olav")).toBe(2);
+  });
+
+  it("keeps one entry per identity and creates it on first impression", () => {
+    const db = openMemoryDb();
+    appendImpression(db, "olav", "olav", "one", { session: "1", step: "reflect" });
+    appendImpression(db, "olav", "olav", "two", { session: "2", step: "reflect" });
+    appendImpression(db, "dana", "dana", "three", { session: "3", step: "reflect" });
+
+    expect(listEntries(db, "identity").map((e) => e.topic).sort()).toEqual(["dana", "olav"]);
+  });
+
+  it("ignores an empty impression rather than storing a blank", () => {
+    const db = openMemoryDb();
+    appendImpression(db, "olav", "olav", "   ", { session: "1", step: "reflect" });
+    expect(impressionCount(db, "olav")).toBe(0);
+  });
+
+  it("keeps people out of the knowledge namespace", () => {
+    const db = openMemoryDb();
+    appendImpression(db, "olav", "olav", "one", { session: "1", step: "reflect" });
+    // The research gatekeeper's shortlist must never surface a person.
+    expect(listEntries(db, KNOWLEDGE)).toHaveLength(0);
+  });
+
+  it("records which session and step formed each impression", () => {
+    const db = openMemoryDb();
+    appendImpression(db, "olav", "olav", "one", { session: "000007", step: "reflect" });
+    expect(readImpressions(db, "olav")[0]).toMatchObject({
+      session: "000007",
+      step: "reflect",
+    });
   });
 });

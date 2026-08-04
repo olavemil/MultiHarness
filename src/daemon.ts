@@ -1,4 +1,6 @@
+import path from "node:path";
 import { createCliAdapter } from "./adapters/cli.ts";
+import type { Config } from "./config/schema.ts";
 import type { Adapter } from "./adapters/types.ts";
 import { loadConfig } from "./config/load.ts";
 import type { InboundMessage } from "./core/types.ts";
@@ -6,8 +8,50 @@ import { runSession } from "./session/run.ts";
 import { appendMessage, readRecent } from "./store/channelStore.ts";
 import { loadIdentity } from "./store/identityStore.ts";
 import { ensurePaths, resolvePaths } from "./store/paths.ts";
+import { instanceHome } from "./config/load.ts";
+
+/**
+ * Reads `<instance>/.env` when present, so secrets sit beside the instance
+ * rather than having to be exported by whatever launches the daemon. Anything
+ * already in the environment wins.
+ */
+function loadInstanceEnv(): void {
+  const file = path.join(instanceHome(), ".env");
+  try {
+    process.loadEnvFile(file);
+  } catch {
+    // Absent is normal: the CLI adapter needs no secrets at all.
+  }
+}
 
 const HISTORY_LIMIT = 40;
+
+/**
+ * Slack when it is configured, otherwise the CLI. Tokens come from the
+ * environment; a missing one is a startup error rather than a silent fallback
+ * to stdin, which would look like the adapter working.
+ */
+async function selectAdapter(config: Config): Promise<Adapter> {
+  if (!config.slack.enabled) return createCliAdapter();
+
+  const botToken = process.env["SLACK_BOT_TOKEN"];
+  const appToken = process.env["SLACK_APP_TOKEN"];
+  if (!botToken || !appToken) {
+    throw new Error(
+      "[slack] enabled but SLACK_BOT_TOKEN and SLACK_APP_TOKEN are not both set. " +
+        "The bot token starts xoxb-, the app-level token for Socket Mode starts xapp-.",
+    );
+  }
+
+  // Imported lazily so the CLI path does not pay for Bolt's dependency tree.
+  const { createSlackAdapter } = await import("./adapters/slack/index.ts");
+  return createSlackAdapter({
+    botToken,
+    appToken,
+    threadMode: config.slack.thread_mode,
+    agentName: config.agent.name,
+  });
+}
 
 /**
  * The harness runs headless. Adapters attach and detach; nothing about the
@@ -18,11 +62,12 @@ const HISTORY_LIMIT = 40;
  * worth having.
  */
 async function main(): Promise<void> {
+  loadInstanceEnv();
   const config = await loadConfig();
   const paths = resolvePaths(config.working_dir);
   await ensurePaths(paths);
 
-  const adapter: Adapter = createCliAdapter();
+  const adapter: Adapter = await selectAdapter(config);
 
   const inbox: InboundMessage[] = [];
   let draining: Promise<void> | undefined;

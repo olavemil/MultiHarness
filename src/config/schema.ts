@@ -108,6 +108,11 @@ export const Config = z.object({
      * step that does not exist. Empty means "decide only whether to reply".
      */
     selectable_steps: z.array(z.string()),
+    /**
+     * Structures the session once a reply is decided on. Runs only when there
+     * are `selectable_steps` to choose between.
+     */
+    plan_step: z.string().min(1),
     /** Runs after the chosen steps whenever `entry_step` decided to reply. */
     respond_step: z.string().min(1),
     /** Always appended, whether or not the agent chose to respond. */
@@ -121,7 +126,41 @@ export const Config = z.object({
      * on that instead of on distance between messages. Costs one `fast` call.
      */
     reply_target: z.boolean().default(false),
+    /**
+     * How many impressions must accumulate before they are synthesised into the
+     * identity's running summary. Synthesising after every exchange would
+     * restate the latest one and call it a pattern.
+     */
+    impression_threshold: z.number().int().positive().default(5),
   }),
+
+  /**
+   * Slack transport. Tokens are read from $SLACK_BOT_TOKEN and
+   * $SLACK_APP_TOKEN — never from config, which ships with the repo.
+   */
+  slack: z
+    .object({
+      enabled: z.boolean().default(false),
+      /**
+       * `separate` gives each thread its own channel, so per-channel history and
+       * reflection follow one conversation instead of an interleaving.
+       */
+      thread_mode: z.enum(["separate", "shared"]).default("separate"),
+    })
+    .default(() => ({ enabled: false, thread_mode: "separate" as const })),
+
+  /** Outbound HTTP, for the retrieval tools. */
+  web: z
+    .object({
+      /**
+       * Empty means any public host. Private and link-local addresses are
+       * refused regardless — that is not configurable, because the daemon runs
+       * beside ollama on localhost.
+       */
+      allowed_hosts: z.array(z.string()).default([]),
+      user_agent: z.string().default("MultiHarness/0.1 (local agent harness)"),
+    })
+    .default(() => ({ allowed_hosts: [], user_agent: "MultiHarness/0.1 (local agent harness)" })),
 
   steps: z.record(z.string(), StepConfig).default({}),
 });

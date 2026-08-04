@@ -222,6 +222,31 @@
         "text": "native type stripping \u2014 is that why the parameter properties broke?"
       },
       "expect": true
+    },
+    {
+      "id": "greeting-alone",
+      "note": "A greeting in a channel with nobody else present. An opener invites an answer even though it is not a question.",
+      "history": [],
+      "message": {
+        "from": "olav",
+        "text": "hey there"
+      },
+      "expect": true
+    },
+    {
+      "id": "greeting-to-room",
+      "note": "Opens a conversation and expects someone to take it.",
+      "history": [
+        {
+          "from": "olav",
+          "text": "deploy finished"
+        }
+      ],
+      "message": {
+        "from": "olav",
+        "text": "morning all, anyone about?"
+      },
+      "expect": true
     }
   ]
 }

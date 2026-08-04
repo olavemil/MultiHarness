@@ -12,14 +12,33 @@ There may be no overlap at all — a short list does not imply a match.
 
 ${nearest_topics}
 
-## First: is this about a subject at all?
+## First: is this a specific, durable fact about a subject?
 
-If the candidate describes what someone said, asked, or plans to do — `olav asked what node
-version the project targets`, `the team will revisit this Friday` — **`reject`**. That is
-conversation state, not knowledge. Stop there.
+The store holds facts worth retrieving weeks from now by someone who was not present. If the
+candidate is not one, **`reject`** and stop there. Three ways it fails that test:
 
-The store holds durable facts about subjects, worth retrieving weeks from now by someone who
-was not present.
+- **Conversation state** — what someone said, asked, or decided. Who wanted what is not a fact
+  about a subject.
+- **A plan** — what will be done, in what order, next. The store is not a task list.
+- **Too general to retrieve** — statements that could sit under almost any topic, or that
+  assert something is important, worth considering, or depends on circumstances. If you cannot
+  name the specific thing it is a fact *about*, there is no topic to file it under, and nobody
+  will ever find it. Reject it rather than inventing a topic to hold it.
+
+Apply this test before anything below. Most candidates that fail it look superficially like
+knowledge, because they are written in the same register.
+
+## Second: does one of the topics already say this?
+
+If the candidate restates something an entry above already covers — the same fact in different
+words, adding no detail that is not already there — **`reject`**. Stop there.
+
+That is not the same as adding a new angle. A candidate that gives the entry a mechanism, a
+caveat, a number, or a consequence it does not already contain is `append`. A candidate that
+says what the entry says, reworded, is a restatement — appending it makes the entry longer
+without making it say more, and every future read pays for that.
+
+Compare against what the entry above actually states, not against the topic name.
 
 ## Then: does it belong under a topic that already exists?
 

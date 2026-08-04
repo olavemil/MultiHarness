@@ -23,8 +23,18 @@ export const summarize: ComputedStep = {
       } |`;
     });
 
+    // Whether anything was said is the single most important fact about a
+    // session, and it is otherwise invisible: a session that stayed silent
+    // simply has no `respond` output, which reads the same as one whose reply
+    // went missing. `review` judges the outcome and has to be told plainly.
+    const replied = completed.some((step) => step.name === "respond");
+
     return [
       "# Session summary",
+      "",
+      replied
+        ? "**A reply was sent to the channel.**"
+        : "**No reply was sent — the agent chose to stay silent this session.**",
       "",
       // Counts only what has run: the closing steps, this one included, are
       // still in flight. Saying "N steps" flat would understate the session.

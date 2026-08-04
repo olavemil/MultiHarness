@@ -198,12 +198,46 @@ sessions/     one folder per session: reflection.md, reaction.md, research.md,
               plan_N.md, trace/ (rendered prompts, raw responses, partial working files)
 ```
 
+## Instances
+
+An agent is a directory. `npm run init` verifies the Slack tokens, takes the bot's name from
+Slack rather than from an answer, and creates `~/.multiharness/<bot-name>/` holding:
+
+```
+config.toml   identity and settings — no secrets, safe to share and diff
+.env          Slack tokens, mode 600
+knowledge/ files/ sessions/ channels/ identities/
+```
+
+Config is layered, most general first: `config/default.toml` from the repo (conventions and
+measured defaults) → `$MULTIHARNESS_HOME/config.toml` (what makes this instance itself) →
+`$MULTIHARNESS_CONFIG` (an explicit override, for experiments). `working_dir` defaults to the
+instance directory, so an instance is self-contained.
+
+With one instance the daemon finds it; with several it refuses to guess and asks for
+`MULTIHARNESS_HOME`. Starting the wrong agent is worse than not starting.
+
+**`loadConfig` takes the instance directory as a parameter; tests and evals pass a nonexistent
+one.** Without it they read whatever agent is configured on the machine running them. This bit
+twice: once in the unit tests, and again in `eval/run.ts`, where a real instance named `galatea`
+made every `harness`-mention case silently fail to match — and the misleading results were acted
+on before the cause was spotted. `npm run eval -- --home <dir>` evaluates a real instance
+deliberately.
+
+**The bot name comes from Slack because mention detection depends on it.** The adapter resolves
+the bot's own user id to `agent.name`; a mismatch there makes the agent silently ignore
+everyone who addressed it.
+
 ## Running it
 
 ```
 npm install
 npm run typecheck && npm test
 npm run dev            # CLI adapter; Ctrl-D to exit
+```
+
+```
+npm run init           # create an instance; verifies Slack tokens
 ```
 
 Model tags in `config/default.toml` are the ones present on this machine. Point
@@ -346,23 +380,186 @@ Topic and namespace are the immutable key — there is no UPDATE path for them. 
 append-only with provenance. `knowledge` and `identity` are separate namespaces so the research
 gatekeeper's shortlist is never polluted with people's names.
 
-**The store is solid; the gatekeeper's judgement is not yet.** Across three live runs on the
-same six candidates it produced 0, 0, then 1 append — it fragments one subject across several
-near-identical topics, which is the exact failure the design exists to prevent. The prefilter is
-*not* the problem: cosine scores are sensible (0.76 between related Docker topics, 0.31 between
-unrelated ones) and the shortlist reaches the model.
+**Measured: 8/8, n=3** (`npm run eval -- --step knowledge_gatekeeper`). Cases seed the store
+with real embeddings, so the prefilter is exercised as it runs live. Expectations were chosen
+deliberately: two subjects sharing vocabulary are not automatically one subject, so no case
+asserts that a NAT-latency fact and a macOS-VM-architecture fact must merge — genuinely
+debatable calls are left out rather than encoded as truth.
 
-Leading with "reject conversation state" and "default to append" fixed the first of those
-reliably and the second not at all. Do not tune this further by hand — build
-`eval/cases/knowledge_gatekeeper.json` first. Note when writing it that some apparent
-fragmentation may be correct: `docker nat latency` and `docker macos vm` are arguably different
-subjects, and the expectations need deciding deliberately rather than assumed.
+**Reject gates go before the append default, and each one is terminal.** The prompt tests, in
+order: is this a specific durable fact at all (conversation state, plans, and anything too
+general to file are rejected here); does an entry already say it; does an entry cover the
+subject; otherwise new. Getting that order wrong is the recurring failure — making "default to
+append" emphatic without a preceding duplicate gate took the suite from 7/8 to 5 pass / 2 fail,
+because the broad default swallowed the narrow exclusion.
+
+**Concrete examples leak into generated output.** This prompt asks the model to *produce* a
+topic string, unlike the classification prompts, and an illustrative example inside it became
+the answer: given a deliberately vague candidate, phi4 emitted `metal gpu memory limit` — text
+that appeared only in the prompt's own worked example. Explain the distinction abstractly in any
+prompt with a free-text output field; quotable examples are safe only where every output is
+constrained to an enum.
+
+## Slack adapter
+
+`src/adapters/slack/`. Bolt with Socket Mode — no public URL, which suits a daemon on a laptop.
+Enable with `[slack] enabled`; **tokens come from `$SLACK_BOT_TOKEN` and `$SLACK_APP_TOKEN`, never
+from config**, which ships with the repo. A missing token is a startup error rather than a
+silent fall back to the CLI adapter, which would look like Slack working.
+
+Bolt is the project's only heavyweight dependency — it took `node_modules` from 46 packages to
+133 — so it is imported lazily and the CLI path never loads it.
+
+**The bot's own user id resolves to `agent.name`, not to its Slack display name.** Mentions
+arrive as `<@U123ABC>`; the adapter rewrites them to display names before the harness sees the
+text, and if the bot resolved to whatever the workspace calls it, `detectMention` would miss
+every message addressing the agent and it would silently ignore everyone.
+
+Other bots are deliberately *not* filtered — the agent does not need to know whether it is
+talking to a human. Only its own messages are, because replying to itself is an unbounded loop.
+
+**Threads are channels by default** (`thread_mode = "separate"`). Per-channel history and
+reflection then follow one conversation rather than an interleaving of several, which is what
+the harness's per-channel state assumes. The cost is that each thread starts cold and skips
+`reflect` on its first session. `"shared"` folds threads into the parent channel instead.
+
+**`MULTIHARNESS_DEBUG=1` logs every event the socket delivers**, before routing and before
+filtering, plus the reason any message was ignored. Silence on Slack has two opposite causes —
+events not arriving, or the adapter dropping them — and without this there is no way to tell
+which. Events arriving at all means the app subscription is fine and the problem is here;
+nothing arriving means the bot is not in the channel or is not subscribed to `message.*`.
+
+Slack is also the first surface where weighted participation has real multi-participant
+channels to run against; it is still `enabled = false`.
+
+## Tools
+
+`src/tools/`. A tool is a name, a Zod parameter schema, and a handler returning **text** — the
+result goes back into a prompt, so it has to be legible to a model before anything else.
+Adding one is a definition, a registry line, and a name in a step's `tools` allowlist.
+
+**A step with tools runs in two phases.** Constrained decoding and tool calling cannot both be
+in force — pinning the output shape leaves the model no room to emit a call — so the step first
+runs an iterating loop, unconstrained, and then makes one schema-shaped call over the transcript
+of what the tools returned. Step output stays schema-validated either way.
+
+**Tool failures come back as tool results, never as exceptions.** A name outside the allowlist,
+arguments that fail validation, a handler that throws: each returns text the model can read and
+correct. The model reaching for something it was not given must not kill the step. The loop
+stops at six iterations and says so.
+
+**`knowledge_write` is not a write.** It hands the candidate to the gatekeeper, which decides
+whether anything is stored, and reports the verdict back so the model learns what the store
+accepts. No step can put an entry in on its own authority. `no_tools` on a role still empties
+the allowlist before any of this runs.
+
+## The research step
+
+The first expensive step and the only writer to the knowledge store. Runs a tool loop on
+`reasoning` with thinking on, then answers under its schema. `react` chooses it via
+`selectable_steps`.
+
+**`react` and `plan` are separate calls answering separate questions.** `react` decides only
+whether to reply; `plan` decides how the session is structured, and runs only once a reply is
+settled and there are `selectable_steps` to choose between. Fusing them made one call answer two
+unrelated questions and forced `react` to run even when being named had already settled the
+first. Split, a named message skips `react` entirely, and a clear-cut "no" costs one call that
+never has to pick steps it will not use.
+
+**A named message routes to `prompts/situations/named.md`, not to a positional fragment.** The
+six conversational-position fragments all reason about whether an *unaddressed* message is meant
+for the assistant; handing a named one to `other_absent` tells it the message belongs to someone
+else. The fast path used to hide this by short-circuiting before routing.
+
+There is no fetch tool, so "research" today means consulting the knowledge store and the model's
+own knowledge. A URL fetcher is a larger decision than it looks: fetched text lands directly in
+a prompt, which makes it a prompt-injection surface, and it wants deciding on purpose.
+
+## Steps
+
+| step | role | tools | when |
+|---|---|---|---|
+| `reflect` | digest | — | second session onward in a channel |
+| `react` | fast | — | unless the agent was named |
+| `plan` | fast | — | replying, and `selectable_steps` is non-empty |
+| `research` | reasoning | knowledge search/read/write | chosen by `plan` |
+| `reason` | reasoning | none | chosen by `plan` |
+| `draft` | reasoning | none | chosen by `plan` |
+| `respond` | reasoning | — | replying |
+| `summarize` | — | — | always |
+| `review` | digest | — | always |
+
+`reason` deliberately has no tools: it exists to think, and a tool loop would turn it back into
+research. `draft` writes a first pass with notes for `respond` to sharpen.
+
+## Tools
+
+Implemented, all against the knowledge store:
+
+| tool | access | notes |
+|---|---|---|
+| `knowledge_search` | read | keyword search over topics, summaries, and content |
+| `knowledge_read` | read | opens one topic in full |
+| `knowledge_write` | gated | hands a candidate to the gatekeeper, which may refuse it |
+| `wikipedia_search` | network | search plus opening extracts; a special-cased site, not a search engine |
+| `fetch_url` | network | GET a public page as text; no credentials, no cookies |
+
+### Retrieved text is untrusted, and treated as such
+
+Two hazards, handled in code rather than by asking the prompt nicely.
+
+**A fetched page can address the model.** Retrieved text is fenced and labelled with its source
+by `tools/web/untrusted.ts`, and the research prompt states that directives inside it are page
+content to be reported, never obeyed — including when passing a claim to `knowledge_write`,
+where it becomes "page X states Y" rather than "Y".
+
+**An unguarded fetcher is an SSRF hole here specifically.** The daemon runs beside ollama on
+`127.0.0.1:11434`, and URLs arrive in chat messages, so a model can be talked into fetching one.
+`tools/web/safeUrl.ts` refuses non-http protocols, and refuses loopback, private, link-local,
+and carrier-grade-NAT addresses — **by resolving DNS**, not by matching the hostname, because
+`localhost` is a perfectly ordinary name that resolves to `127.0.0.1`. Redirects are re-checked
+after the fact. None of that is configurable; `[web] allowed_hosts` narrows further, never
+wider.
+
+Planned, from harness.md:
+
+- **agent files** — read/write/list within the sandbox filesystem. Self-contained and low risk.
+- **prior session lookup** — read a sealed step output by session number. A reader over
+  `sessions/`.
+- **news search** — same injection surface as the above, and worth an allowlist.
+- **notify / consult** — send a status update or ask a third party. Needs the supervisor's rate
+  limiting first, or two agents in a channel will ping-pong.
+
+## Identity impressions
+
+An identity has two parts, deliberately separate. The **record** — id, display name, aliases,
+and a running summary — lives in `identities/*.json` and is a stable reference. The
+**impressions** live in the knowledge store's `identity` namespace, append-only with
+provenance, one observation per exchange.
+
+**`reflect` forms them, not `review`.** Reflect reads how *they* reacted to the last answer;
+review judges the agent's own work. Reflect emits an `impression` field and the harness appends
+it — the step runs on `digest` with tools refused and cannot write anything itself.
+
+**Synthesis is a separate step**, queued after the closing steps once
+`impression_threshold` (5) impressions have accumulated. Running it every exchange would
+restate the latest observation and call it a pattern. It writes the identity's `summary`,
+which is what every step sees through `user_summary` — the block that was permanently empty
+until now.
+
+The impressions it was built from are never rewritten, so a summary that has drifted can be
+checked against the record it came from. That is the point of keeping them beside the identity
+rather than inside it.
+
+The prompts ask for two things specifically, because they are what should change the agent's
+behaviour: what the person wants from an answer, and **whether effort is appreciated** — someone
+who never engages with careful work is asking for a fast answer, which is useful rather than a
+complaint.
 
 ## Not built yet
 
 In rough order: an eval suite for the knowledge gatekeeper (see above — it is built but
-unmeasured and currently unreliable); tools exposing the store to steps; the Slack adapter via
-Bolt with Socket Mode; `plan`/`research`/`reason`/`draft` with full budget enforcement; the
+unmeasured and currently unreliable); tools exposing the store to steps; `plan`/`research`/`reason`/`draft` with full budget enforcement; the
 parallel supervisor with cancellation and the per-channel actor; the local web UI.
 
 Sessions currently run one at a time globally, and the wallclock budget is only checked between

@@ -1,4 +1,5 @@
 import type { ContextBlock } from "./types.ts";
+import { identityImpressions } from "./identityImpressions.ts";
 import { incomingMessage } from "./incomingMessage.ts";
 import { lastReflection } from "./lastReflection.ts";
 import { lastReview } from "./lastReview.ts";
@@ -22,6 +23,7 @@ const ALL: readonly ContextBlock[] = [
   lastSessionSummary,
   lastReflection,
   reflection,
+  identityImpressions,
 ];
 
 export const BLOCK_REGISTRY: ReadonlyMap<string, ContextBlock> = new Map(

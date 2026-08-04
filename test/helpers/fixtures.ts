@@ -21,17 +21,22 @@ export async function testConfig(host: string, workingDir: string): Promise<Conf
   // test doubles below replace those, so the warning is noise here.
   const warn = console.warn;
   console.warn = () => {};
-  const config = await loadConfig().finally(() => {
-    console.warn = warn;
-  });
+  // No instance layer: tests describe their own world, and must not inherit
+  // the agent configured on the machine running them.
+  const config = await loadConfig(undefined, path.join(tmpdir(), "multiharness-no-instance")).finally(
+    () => {
+      console.warn = warn;
+    },
+  );
 
   return {
     ...config,
     working_dir: workingDir,
     // Off for the general session tests: they exercise pipeline mechanics, and
-    // an extra queued reply per case would be noise. The reply-target path has
-    // its own tests that turn it back on.
-    session: { ...config.session, reply_target: false },
+    // an extra queued reply per case would be noise. Both have dedicated tests
+    // that turn them back on. Empty `selectable_steps` also means `plan` is
+    // skipped, since there would be nothing for it to choose.
+    session: { ...config.session, reply_target: false, selectable_steps: [] },
     ollama: { ...config.ollama, host, request_timeout_ms: 5_000 },
     roles: Object.fromEntries(
       Object.entries(config.roles).map(([name, role]) => [name, { ...role, model: `test-${name}` }]),

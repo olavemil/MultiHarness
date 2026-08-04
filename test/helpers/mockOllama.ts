@@ -32,10 +32,18 @@ export type MockReply =
     }
   | { kind: "status"; status: number; body: string }
   /** `/api/embed` answers with plain JSON, not the NDJSON stream. */
-  | { kind: "embed"; vector: number[] };
+  | { kind: "embed"; vector: number[] }
+  /** An assistant turn that asks for tools instead of answering. */
+  | { kind: "tools"; calls: { name: string; args: Record<string, unknown> }[] };
 
 /** Convenience: a successful reply carrying `content`. */
 export const reply = (content: string): MockReply => ({ kind: "content", content });
+
+/** Convenience: a turn that calls one tool. */
+export const toolCall = (name: string, args: Record<string, unknown> = {}): MockReply => ({
+  kind: "tools",
+  calls: [{ name, args }],
+});
 
 /** Convenience: an embedding response for `/api/embed`. */
 export const embedding = (vector: number[]): MockReply => ({ kind: "embed", vector });
@@ -66,6 +74,24 @@ export async function mockOllama(replies: MockReply[]): Promise<MockOllama> {
       if (next.kind === "embed") {
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({ embeddings: [next.vector] }));
+        return;
+      }
+
+      if (next.kind === "tools") {
+        res.writeHead(200, { "content-type": "application/x-ndjson" });
+        res.write(
+          `${JSON.stringify({
+            message: {
+              content: "",
+              tool_calls: next.calls.map((c) => ({
+                function: { name: c.name, arguments: c.args },
+              })),
+            },
+            done: false,
+          })}\n`,
+        );
+        res.write(`${JSON.stringify({ done: true, prompt_eval_count: 5, eval_count: 2 })}\n`);
+        res.end();
         return;
       }
 

@@ -54,6 +54,25 @@ Only when something concrete should change. Phrase each as an action to take, no
 avoid — "give the version number before explaining the migration path", not "stop burying the
 answer". Keep them specific to this channel and these people.
 
+## What this exchange showed about them
+
+Separately from judging the last session, note anything the new message showed about the person
+— but only when it actually showed something.
+
+Two things matter, because they change how much effort future replies deserve:
+
+- **What they want from an answer.** Speed or thoroughness. The answer or the reasoning behind
+  it. Being corrected bluntly or gently.
+- **Whether effort is appreciated.** Did they engage with a detailed reply, or move straight
+  past it? Did they have to ask again? Someone who never picks up careful work is telling you
+  something, and so is someone who follows up on it.
+
+Write it as an observation about this exchange, not a verdict on them — "asked a follow-up
+about the reasoning, so the detail was wanted here" rather than "likes detail". These
+accumulate, and a later step reads across them for the pattern.
+
+Leave it empty when nothing was shown, which is most of the time.
+
 ## Output
 
 Return JSON only, with the fields in this order:
@@ -62,3 +81,4 @@ Return JSON only, with the fields in this order:
   the new message tells you. Work it out here first.
 - `signal` — `satisfied`, `dissatisfied`, or `no_signal`. This must follow from the assessment.
 - `recommendations` — concrete actions for this session. Empty unless something should change.
+- `impression` — one sentence on what this exchange showed about the person, or empty.

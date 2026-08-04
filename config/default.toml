@@ -92,10 +92,12 @@ incoming_message = 600
 [session]
 reflect_step = "reflect"
 entry_step = "react"
-# Optional preparatory steps react may choose between. Empty for now: with no
-# research or reasoning steps built yet, react decides only whether to reply.
-# Adding "research" here plus a step file and a prompt is the whole change.
-selectable_steps = []
+# Optional preparatory steps react may choose between.
+#
+# Choosing between these is `plan`'s job, not react's — so a named message
+# still skips the react call entirely and goes straight to structuring.
+selectable_steps = ["research", "reason", "draft"]
+plan_step = "plan"
 respond_step = "respond"
 closing_steps = ["summarize", "review"]
 max_wallclock_ms = 900000
@@ -112,6 +114,10 @@ max_wallclock_ms = 900000
 # case at n=5 is suggestive rather than conclusive; re-measure if the latency
 # starts to matter.
 reply_target = true
+# Impressions of a person accumulate one exchange at a time and are synthesised
+# into their summary every N of them. Lower is more responsive and more prone to
+# mistaking one exchange for a pattern.
+impression_threshold = 5
 
 # --- Per-step overrides ------------------------------------------------------
 # Each step declares its own default role; these entries override it.
@@ -122,6 +128,10 @@ timeout_ms = 30000
 
 [steps.respond]
 role = "reasoning"
+# Read-only knowledge access. Off by default: a tool loop costs an extra model
+# round trip per call on the reply path, and there is nothing in the store until
+# a step starts writing. Turn on once `research` is populating it.
+# tools = ["knowledge_search", "knowledge_read"]
 # Thinking dominates wallclock on this model — ~75s of reasoning for a ~45-token
 # chat reply — and ollama excludes it from eval_count, so it is invisible in the
 # token figures. Writing a reply from work earlier steps already did does not
@@ -131,6 +141,31 @@ think = false
 
 [steps.reflect]
 role = "digest"
+
+[steps.plan]
+role = "fast"
+timeout_ms = 30000
+
+[steps.reason]
+role = "reasoning"
+timeout_ms = 600000
+
+[steps.draft]
+role = "reasoning"
+timeout_ms = 600000
+
+[steps.research]
+role = "reasoning"
+# Thinking stays on here: this is the step it exists for. Generous timeout — a
+# tool loop with a reasoning model is the slowest thing in a session.
+timeout_ms = 600000
+tools = [
+  "knowledge_search",
+  "knowledge_read",
+  "knowledge_write",
+  "wikipedia_search",
+  "fetch_url",
+]
 
 [steps.knowledge_gatekeeper]
 role = "fast"
@@ -142,6 +177,33 @@ timeout_ms = 30000
 
 [steps.review]
 role = "digest"
+
+[steps.impression]
+role = "digest"
+
+# --- Web retrieval -----------------------------------------------------------
+# Retrieved text is untrusted: it is fenced and labelled before it reaches a
+# prompt, because a page can contain text addressed at the model.
+#
+# Private, loopback, and link-local addresses are refused whatever this says —
+# the daemon sits next to ollama on localhost, and URLs arrive in chat messages.
+
+[web]
+# Empty allows any public host. Narrow it to a list to restrict retrieval to
+# sites you trust; subdomains of a listed host are included.
+allowed_hosts = []
+user_agent = "MultiHarness/0.1 (local agent harness)"
+
+# --- Slack -------------------------------------------------------------------
+# Socket Mode, so no public URL is needed. Tokens come from the environment:
+#   SLACK_BOT_TOKEN=xoxb-...   SLACK_APP_TOKEN=xapp-...
+# They are secrets and must never be written into this file.
+
+[slack]
+enabled = false
+# "separate": each thread becomes its own channel, so history and reflection
+# track one conversation. "shared": thread messages join the parent channel.
+thread_mode = "separate"
 
 # --- Weighted participation ---------------------------------------------------
 # Damps the agent's tendency to dominate a channel. Each reply can look locally

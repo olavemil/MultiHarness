@@ -11,9 +11,11 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "eval": "node eval/run.ts"
+    "eval": "node eval/run.ts",
+    "init": "node scripts/init.mjs"
   },
   "dependencies": {
+    "@slack/bolt": "^5.0.0",
     "smol-toml": "^1.4.2",
     "zod": "^4.1.12"
   },

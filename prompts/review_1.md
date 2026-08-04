@@ -16,7 +16,13 @@ ${session_summary}
 
 ## What to judge
 
-How well the response answered the message — relevance, correctness, and tone, in that order.
+**First check whether a reply was sent at all.** The summary above says so plainly. Staying
+silent is a normal outcome and often the right one — a message aimed at someone else, or an
+acknowledgement that needed nothing back. Judge silence on whether it was the right call, and
+do not describe a reply that does not exist.
+
+When a reply was sent: how well it answered the message — relevance, correctness, and tone, in
+that order.
 
 Whether the time spent was proportionate. A pipeline that ran extra steps to produce an answer
 that needed none was worse than a fast direct reply, even if the answer was slightly better.

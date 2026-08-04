@@ -10,6 +10,12 @@ export interface Reflection {
    */
   signal: "satisfied" | "dissatisfied" | "no_signal";
   recommendations: string[];
+  /**
+   * What the incoming message showed about the person, if anything. Appended to
+   * their impression log. This belongs here rather than in `review`: reflect
+   * reads how *they* reacted, while review judges the agent's own work.
+   */
+  impression: string;
 }
 
 // Reasoning before the verdict it justifies.
@@ -17,6 +23,7 @@ const schema = z.object({
   assessment: z.string(),
   signal: z.enum(["satisfied", "dissatisfied", "no_signal"]),
   recommendations: z.array(z.string()),
+  impression: z.string(),
 }) as z.ZodType<Reflection>;
 
 /**
@@ -50,6 +57,7 @@ export const reflect: ModelStep<Reflection> = {
     assessment: "Reflection could not be parsed; treating the previous session as unjudged.",
     signal: "no_signal",
     recommendations: [],
+    impression: "",
   }),
 
   render: (r) => {
@@ -68,6 +76,10 @@ export const reflect: ModelStep<Reflection> = {
       "## Do this session",
       "",
       recommendations,
+      "",
+      "## Impression of them",
+      "",
+      r.impression.trim() || "_(nothing new)_",
     ].join("\n");
   },
 };

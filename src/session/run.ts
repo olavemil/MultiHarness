@@ -4,6 +4,10 @@ import type { BlockInput } from "../context/blocks/index.ts";
 import type { ChannelMessage, CompletedStep, Identity, InboundMessage } from "../core/types.ts";
 import { callModel } from "../model/call.ts";
 import { resolveStepModel } from "../model/roles.ts";
+import { runToolLoop } from "../model/toolLoop.ts";
+import { resolveTools } from "../tools/registry.ts";
+import { openKnowledgeDb } from "../knowledge/db.ts";
+import { appendImpression, impressionCount, readImpressions } from "../knowledge/impressions.ts";
 import { detectMention } from "../core/mentions.ts";
 import { computeSituation } from "../core/situation.ts";
 import { drawParticipation, responseProbability } from "../core/participation.ts";
@@ -12,7 +16,12 @@ import { loadPriorSession, recordLastSession, type PriorSession } from "../store
 import { prepareModelStep } from "./prepareStep.ts";
 import { getStep } from "../steps/registry.ts";
 import type { AnyStep, ModelStep } from "../steps/types.ts";
+import type { ToolCallRecord, ToolContext } from "../tools/types.ts";
 import type { Reaction } from "../steps/react.ts";
+import type { Reflection } from "../steps/reflect.ts";
+import type { Impression } from "../steps/impression.ts";
+import { saveIdentity } from "../store/identityStore.ts";
+import type { Plan } from "../steps/plan.ts";
 import type { Response as StepResponse } from "../steps/respond.ts";
 import type { Paths } from "../store/paths.ts";
 import { createSession, sealStep, workingFilePath, type SessionHandle } from "../store/sessionStore.ts";
@@ -67,6 +76,7 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
   let reaction: Reaction | undefined;
   let reply: string | undefined;
   let closingQueued = false;
+  let synthesiseImpression = false;
 
   // Settled in code, not by the model. See `core/mentions.ts`.
   const mention = detectMention(message.text, config.agent);
@@ -82,8 +92,22 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
         })
       : undefined;
 
-  const blockInput = (): BlockInput => ({ message, history, identity, completed, prior });
+  // Opened on demand and closed at session end. A daemon runs indefinitely, so
+  // a handle left open per session is a handle leaked per session.
+  let db: ReturnType<typeof openKnowledgeDb> | undefined;
+  const knowledgeDb = () => (db ??= openKnowledgeDb(paths.knowledge));
+  let impressions: { text: string }[] = [];
 
+  const blockInput = (): BlockInput => ({
+    message,
+    history,
+    identity,
+    completed,
+    prior,
+    impressions,
+  });
+
+  try {
   while (queue.length > 0) {
     const next = queue.shift() as { name: string; topic: string };
     const step = getStep(next.name);
@@ -98,12 +122,12 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
       replyTarget: replyTarget?.kind,
     };
 
-    // Being named settles whether to reply. When there is also no preparatory
-    // work to choose between, the entry step has nothing left to decide, so it
-    // is answered in code rather than costing a model call.
+    // Being named settles whether to reply, full stop — `react` answers only
+    // that question now, so there is nothing left for it to decide and no model
+    // call to make. Structuring still happens, in `plan`.
     const isEntry = step.name === config.session.entry_step;
     const outcome =
-      isEntry && mention !== undefined && config.session.selectable_steps.length === 0
+      isEntry && mention !== undefined
         ? await sealDirectReaction(step, mention, ctx)
         : await executeStep(step, next.topic, ctx);
 
@@ -137,13 +161,53 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
       }
 
       if (reaction.respond) {
-        for (const chosen of reaction.steps) queue.push({ name: chosen.step, topic: chosen.topic });
-        queue.push({ name: config.session.respond_step, topic: "" });
+        // Structuring is a separate question, and only worth asking when there
+        // is something to choose between.
+        queue.push(
+          config.session.selectable_steps.length > 0
+            ? { name: config.session.plan_step, topic: "" }
+            : { name: config.session.respond_step, topic: "" },
+        );
       }
+    }
+
+    if (step.name === config.session.plan_step) {
+      const chosenPlan = outcome.value as Plan;
+      for (const chosen of chosenPlan.steps) {
+        queue.push({ name: chosen.step, topic: chosen.topic });
+      }
+      queue.push({ name: config.session.respond_step, topic: "" });
     }
 
     if (step.name === config.session.respond_step) {
       reply = (outcome.value as StepResponse).message;
+    }
+
+    // `reflect` forms the impression, because it is the step that reads how
+    // *they* reacted; `review` judges the agent's own work. The harness records
+    // it — reflect runs on `digest` with tools refused and cannot write.
+    if (step.name === config.session.reflect_step) {
+      const { impression: noticed } = outcome.value as Reflection;
+      if (noticed.trim() !== "") {
+        appendImpression(knowledgeDb(), identity.id, identity.displayName, noticed, {
+          session: session.id,
+          step: config.session.reflect_step,
+        });
+        impressions = readImpressions(knowledgeDb(), identity.id).map((c) => ({ text: c.text }));
+
+        // Synthesise only once enough has accumulated to read as a pattern.
+        // Queued for the end of the session rather than here: it costs a digest
+        // call, and the fresh summary is for the *next* session to use.
+        const total = impressionCount(knowledgeDb(), identity.id);
+        synthesiseImpression = total > 0 && total % config.session.impression_threshold === 0;
+      }
+    }
+
+    if (step.name === "impression") {
+      const { summary } = outcome.value as Impression;
+      if (summary.trim() !== "") {
+        await saveIdentity(paths, { ...identity, summary: summary.trim() });
+      }
     }
 
     // Closing steps go on once every other step has been queued, and are the
@@ -151,6 +215,7 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
     if (queue.length === 0 && !closingQueued) {
       closingQueued = true;
       for (const name of config.session.closing_steps) queue.push({ name, topic: "" });
+      if (synthesiseImpression) queue.push({ name: "impression", topic: "" });
     } else if (!closingQueued && Date.now() - startedAt > config.session.max_wallclock_ms) {
       console.warn(
         `[session ${session.id}] wallclock budget of ${config.session.max_wallclock_ms}ms ` +
@@ -160,6 +225,10 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
       closingQueued = true;
       for (const name of config.session.closing_steps) queue.push({ name, topic: "" });
     }
+  }
+
+  } finally {
+    db?.close();
   }
 
   await recordLastSession(paths, message.channelId, session);
@@ -213,9 +282,8 @@ async function sealDirectReaction(
   const startedAtIso = new Date().toISOString();
 
   const value: Reaction = {
-    respond: true,
     reason: `Addressed by name ("${mention}"), matched by the harness rather than judged.`,
-    steps: [],
+    respond: true,
   };
 
   const content = (step as ModelStep<Reaction>).render(value);
@@ -233,6 +301,20 @@ async function sealDirectReaction(
   return {
     value,
     completed: { name: step.name, topic: "", outputFile: step.outputFile, content, durationMs },
+  };
+}
+
+/**
+ * Tools reach the knowledge store and nothing else. The database is opened on
+ * first use, so a step without knowledge tools never touches sqlite.
+ */
+function toolContext(ctx: ExecuteContext, stepName: string): ToolContext {
+  let db: ReturnType<typeof openKnowledgeDb> | undefined;
+  return {
+    config: ctx.config,
+    knowledge: () => (db ??= openKnowledgeDb(ctx.paths.knowledge)),
+    session: ctx.session.id,
+    step: stepName,
   };
 }
 
@@ -273,6 +355,31 @@ async function executeModelStep(
   });
   const { prompt, fragment, situation, context, renderedPrompt } = prepared;
 
+  // A step with tools gathers first, unconstrained, then answers under its
+  // schema over what it found. The allowlist has already had the role's
+  // `no_tools` veto applied by `resolveStepModel`.
+  let toolTranscript = "(no tools were used)";
+  let toolCalls: ToolCallRecord[] = [];
+  if (model.tools.length > 0) {
+    const loop = await runToolLoop({
+      label: step.name,
+      host: config.ollama.host,
+      role: model.role,
+      prompt: renderedPrompt,
+      tools: resolveTools(model.tools),
+      context: toolContext(ctx, step.name),
+      timeoutMs: model.timeoutMs,
+      signal: ctx.signal,
+    });
+    toolCalls = loop.calls;
+    toolTranscript = loop.transcript;
+  }
+
+  const finalPrompt =
+    model.tools.length > 0
+      ? `${renderedPrompt}\n\n## What the tools returned\n\n${toolTranscript}`
+      : renderedPrompt;
+
   // The running step streams here; it becomes output only when sealed, so a
   // step that dies mid-flight still leaves what it had.
   const working = createWriteStream(workingFilePath(session, step.name), { flags: "w" });
@@ -283,7 +390,7 @@ async function executeModelStep(
       label: step.name,
       host: config.ollama.host,
       role: model.role,
-      prompt: renderedPrompt,
+      prompt: finalPrompt,
       schema: step.buildSchema(config),
       fallback: () => step.fallback(config),
       timeoutMs: model.timeoutMs,
@@ -305,11 +412,12 @@ async function executeModelStep(
     durationMs,
     variantId: prompt.variantId,
     promptPath: prompt.path,
-    situation: situation?.id,
+    situation: situation?.id ?? prepared.fragmentId,
     situationVariantId: fragment?.variantId,
     mentionsOther: situation?.mentionsOther,
-    renderedPrompt,
+    renderedPrompt: finalPrompt,
     rawResponse: result.raw,
+    ...(toolCalls.length > 0 ? { toolCalls } : {}),
     parsed: result.value,
     call: result.trace,
     contextBlocks: context.blocks,

@@ -1,12 +1,28 @@
 import type { AnyStep } from "./types.ts";
+import { draft } from "./draft.ts";
+import { impression } from "./impression.ts";
+import { plan } from "./plan.ts";
 import { react } from "./react.ts";
+import { reason } from "./reason.ts";
+import { research } from "./research.ts";
 import { reflect } from "./reflect.ts";
 import { respond } from "./respond.ts";
 import { review } from "./review.ts";
 import { summarize } from "./summarize.ts";
 
 /** Adding a step: one file above, one line here, one prompt, one config entry. */
-const ALL: readonly AnyStep[] = [reflect, react, respond, summarize, review];
+const ALL: readonly AnyStep[] = [
+  reflect,
+  react,
+  plan,
+  research,
+  reason,
+  draft,
+  respond,
+  summarize,
+  review,
+  impression,
+];
 
 const REGISTRY: ReadonlyMap<string, AnyStep> = new Map(ALL.map((step) => [step.name, step]));
 

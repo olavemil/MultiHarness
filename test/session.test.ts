@@ -2,18 +2,21 @@ import { readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { runSession } from "../src/session/run.ts";
+import type { Config } from "../src/config/schema.ts";
 import { ensurePaths, resolvePaths } from "../src/store/paths.ts";
 import { mockOllama, reply, type MockOllama, type MockReply } from "./helpers/mockOllama.ts";
 import { tempWorkingDir, testConfig, testHistory, testIdentity, testMessage } from "./helpers/fixtures.ts";
 
 const REACTION = (respond: boolean) =>
-  JSON.stringify({ respond, reason: respond ? "asked me directly" : "aimed at someone else", steps: [] });
+  JSON.stringify({ reason: respond ? "asked me directly" : "aimed at someone else", respond });
+const PLAN = JSON.stringify({ reason: "answer directly", steps: [] });
 const RESPONSE = JSON.stringify({ message: "Node 22 or newer." });
 const REVIEW = JSON.stringify({ assessment: "Answered directly.", quality: 4, recommendations: [] });
 const REFLECTION = JSON.stringify({
   assessment: "A new question; the previous answer was not commented on.",
   signal: "no_signal",
   recommendations: [],
+  impression: "",
 });
 
 const cleanups: (() => Promise<void>)[] = [];
@@ -23,12 +26,16 @@ afterEach(async () => {
 });
 
 /** Runs one full session against a mocked model server. */
-async function run(replies: MockReply[], message = testMessage()) {
+async function run(
+  replies: MockReply[],
+  message = testMessage(),
+  tweak: (c: Config) => Config = (c) => c,
+) {
   const { dir, cleanup } = await tempWorkingDir();
   const server: MockOllama = await mockOllama(replies);
   cleanups.push(cleanup, server.close);
 
-  const config = await testConfig(server.host, dir);
+  const config = tweak(await testConfig(server.host, dir));
   const paths = resolvePaths(config.working_dir);
   await ensurePaths(paths);
 
@@ -199,6 +206,7 @@ describe("runSession", () => {
     const { result, server } = await run(
       [reply(RESPONSE), reply(REVIEW)],
       testMessage({ text: "harness, what node version does this project target?" }),
+      (c) => ({ ...c, session: { ...c.session, selectable_steps: [] } }),
     );
 
     expect(result.completed.map((s) => s.name)).toEqual([
@@ -215,6 +223,66 @@ describe("runSession", () => {
     const meta = JSON.parse(await read(result.session.traceDir, "react.meta.json"));
     expect(meta.model).toBeNull();
     expect(meta.parsed.respond).toBe(true);
+  });
+
+  it("skips react even when steps remain to be chosen — plan chooses them", async () => {
+    // The whole point of splitting react and plan: being named settles the
+    // reply, so no model decides that again, and structuring is asked
+    // separately. Only plan, respond, and review reach the model.
+    const { result, server } = await run(
+      [reply(PLAN), reply(RESPONSE), reply(REVIEW)],
+      testMessage({ text: "harness, what node version does this project target?" }),
+      (c) => ({ ...c, session: { ...c.session, selectable_steps: ["research"] } }),
+    );
+
+    expect(result.completed.map((s) => s.name)).toEqual([
+      "react",
+      "plan",
+      "respond",
+      "summarize",
+      "review",
+    ]);
+    expect(server.requests.map((r) => r.body.model)).toEqual([
+      "test-fast", // plan
+      "test-reasoning", // respond
+      "test-digest", // review
+    ]);
+    expect(await read(result.session.dir, "reaction.md")).toContain("Addressed by name");
+  });
+
+  it("runs the steps plan chose, in order, before responding", async () => {
+    const chosen = JSON.stringify({
+      reason: "needs looking up then thinking about",
+      steps: [
+        { step: "research", topic: "find the version" },
+        { step: "reason", topic: "work out the implication" },
+      ],
+    });
+    const RESEARCH = JSON.stringify({ findings: "Node 22.", gaps: [] });
+    const THOUGHTS = JSON.stringify({ thinking: "…", conclusion: "22 it is", uncertainties: [] });
+
+    const { result } = await run(
+      [reply(chosen), reply(RESEARCH), reply(THOUGHTS), reply(RESPONSE), reply(REVIEW)],
+      testMessage({ text: "harness, what node version does this project target?" }),
+      (c) => ({
+        ...c,
+        session: { ...c.session, selectable_steps: ["research", "reason", "draft"] },
+        // No tool loop: this test is about queue order, not tool calling.
+        steps: { ...c.steps, research: { ...c.steps["research"], tools: [] } },
+      }),
+    );
+
+    expect(result.completed.map((s) => s.name)).toEqual([
+      "react",
+      "plan",
+      "research",
+      "reason",
+      "respond",
+      "summarize",
+      "review",
+    ]);
+    expect(await read(result.session.dir, "research.md")).toContain("Node 22.");
+    expect(await read(result.session.dir, "thoughts.md")).toContain("22 it is");
   });
 
   it("still asks the model when the agent is not named", async () => {

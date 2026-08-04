@@ -17,6 +17,8 @@ import type { ModelStep } from "../steps/types.ts";
 
 export interface PreparedStep {
   prompt: LoadedPrompt;
+  /** The situation fragment actually used; `named` when the agent was addressed. */
+  fragmentId?: string | undefined;
   fragment: LoadedPrompt | undefined;
   situation: Situation | undefined;
   context: BuiltContext;
@@ -48,13 +50,24 @@ export async function prepareModelStep(args: PrepareArgs): Promise<PreparedStep>
   });
   const context = await buildContext(step.contextBlocks, blockInput, config);
 
-  // Only meaningful when the agent was not named — being named settles the
-  // decision before a situational step ever runs.
-  const situation = step.situational
-    ? computeSituation(blockInput.message.text, blockInput.history, config.agent, 8, args.replyTarget)
-    : undefined;
-  const fragment = situation
-    ? await loadPrompt(situation.id, { dir: SITUATIONS_DIR, rng: args.rng })
+  // Being named settles the reply, so the conversational-position fragments do
+  // not apply: they all reason about whether an *unaddressed* message is meant
+  // for the assistant. Routing a named message through `other_absent` told it
+  // the message belonged to somebody else.
+  const situation =
+    step.situational && mention === undefined
+      ? computeSituation(
+          blockInput.message.text,
+          blockInput.history,
+          config.agent,
+          8,
+          args.replyTarget,
+        )
+      : undefined;
+
+  const fragmentId = step.situational ? (situation?.id ?? "named") : undefined;
+  const fragment = fragmentId
+    ? await loadPrompt(fragmentId, { dir: SITUATIONS_DIR, rng: args.rng })
     : undefined;
 
   const mentionedOther = situation?.mentionsOther ?? "(nobody)";
@@ -80,6 +93,7 @@ export async function prepareModelStep(args: PrepareArgs): Promise<PreparedStep>
     prompt,
     fragment,
     situation,
+    fragmentId,
     context,
     renderedPrompt: render(prompt.text, variables),
   };

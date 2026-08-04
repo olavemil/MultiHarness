@@ -20,6 +20,7 @@
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import { tmpdir } from "node:os";
 import { loadConfig } from "../src/config/load.ts";
 import type { Config } from "../src/config/schema.ts";
 import { detectMention } from "../src/core/mentions.ts";
@@ -31,6 +32,10 @@ import { resolveReplyTarget } from "../src/session/replyTarget.ts";
 import { react, type Reaction } from "../src/steps/react.ts";
 import { reflect, type Reflection } from "../src/steps/reflect.ts";
 import type { PriorSession } from "../src/store/priorSession.ts";
+import { KNOWLEDGE, openMemoryDb } from "../src/knowledge/db.ts";
+import { createEntry, appendContent } from "../src/knowledge/store.ts";
+import { embedText } from "../src/knowledge/similarity.ts";
+import { writeKnowledge } from "../src/knowledge/gatekeeper.ts";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
@@ -47,6 +52,8 @@ interface EvalCase {
   expect: boolean | string;
   /** Previous session output, for steps that read it. */
   prior?: { review: string; summary: string; reflection: string };
+  /** Pre-existing knowledge entries, seeded with real embeddings. */
+  store?: { topic: string; summary: string; seed: string }[];
   /** Asserts the step invented no course-correction. */
   expectNoRecommendations?: boolean;
 }
@@ -75,6 +82,8 @@ function parseArgs(argv: string[]) {
     runs: Number(get("--runs") ?? 5),
     only: get("--case"),
     step: get("--step") ?? "react",
+    /** Point at a real instance to evaluate its configuration instead. */
+    home: get("--home"),
     variant: get("--variant"),
     think: get("--think") === undefined ? undefined : get("--think") !== "false",
   };
@@ -128,9 +137,10 @@ async function runReact(
   const started = Date.now();
   const mention = detectMention(message.text, config.agent);
 
-  // Mirrors the live fast path: being named settles the decision in code, and
-  // with no selectable steps the model is never consulted.
-  if (mention !== undefined && config.session.selectable_steps.length === 0) {
+  // Mirrors the live fast path in `session/run.ts`: being named settles the
+  // reply outright, so react is never consulted. Structuring is `plan`'s
+  // question and is evaluated separately.
+  if (mention !== undefined) {
     return {
       answer: true,
       reason: `named ("${mention}")`,
@@ -141,9 +151,13 @@ async function runReact(
     };
   }
 
-  const replyTarget = config.session.reply_target
-    ? await resolveReplyTarget(config, blockInput)
-    : undefined;
+  // Mirrors the live guard in `session/run.ts`: being named already settles the
+  // decision the reply target exists to inform, so it is not worth a call.
+  // Without this the eval measured a code path a session never takes.
+  const replyTarget =
+    config.session.reply_target && mention === undefined
+      ? await resolveReplyTarget(config, blockInput)
+      : undefined;
   const prepared = await prepareModelStep({
     step: react,
     config,
@@ -173,7 +187,7 @@ async function runReact(
     fellBack: result.trace.fellBack,
     deterministic: false,
     situation:
-      (prepared.situation?.id ?? "—") + (replyTarget ? ` <-${replyTarget.kind}` : ""),
+      (prepared.situation?.id ?? prepared.fragmentId ?? "—") + (replyTarget ? ` <-${replyTarget.kind}` : ""),
   };
 }
 
@@ -217,9 +231,60 @@ async function runReflect(
   };
 }
 
+/**
+ * Seeding uses real embeddings so the prefilter is exercised as it runs live —
+ * a fake vector would make the shortlist meaningless. Cached across runs
+ * because the same seed text recurs on every repeat of a case.
+ */
+const embedCache = new Map<string, number[]>();
+
+async function cachedEmbed(config: Config, text: string): Promise<number[]> {
+  const hit = embedCache.get(text);
+  if (hit) return hit;
+  const vector = await embedText(config, text);
+  embedCache.set(text, vector);
+  return vector;
+}
+
+async function runGatekeeper(
+  config: Config,
+  testCase: EvalCase,
+  _opts: RunOpts,
+): Promise<Attempt> {
+  const db = openMemoryDb();
+  const provenance = { session: "eval", step: "research" };
+
+  for (const seed of testCase.store ?? []) {
+    const vector = await cachedEmbed(config, seed.seed);
+    const entry = createEntry(db, KNOWLEDGE, seed.topic, seed.summary, vector, provenance);
+    appendContent(db, entry.id, seed.seed, provenance);
+  }
+
+  const started = Date.now();
+  const result = await writeKnowledge({
+    db,
+    config,
+    namespace: KNOWLEDGE,
+    candidate: testCase.message.text,
+    provenance,
+  });
+
+  return {
+    answer: result.verdict,
+    reason: `${result.reason}${result.entry ? ` -> ${result.entry.topic}` : ""}`,
+    ms: Date.now() - started,
+    fellBack: false,
+    deterministic: false,
+    situation: result.neighbours.length
+      ? result.neighbours.map((n) => `${n.entry.topic}=${n.score.toFixed(2)}`).join(" ")
+      : "(empty store)",
+  };
+}
+
 const RUNNERS: Record<string, (c: Config, t: EvalCase, o: RunOpts) => Promise<Attempt>> = {
   react: runReact,
   reflect: runReflect,
+  knowledge_gatekeeper: runGatekeeper,
 };
 
 function verdictFor(attempts: Attempt[], expect: boolean | string): Verdict {
@@ -233,7 +298,13 @@ function verdictFor(attempts: Attempt[], expect: boolean | string): Verdict {
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
-  const base = await loadConfig();
+  // Hermetic by default: an eval must not read whatever agent happens to be
+  // configured on this machine. A real instance with a different `agent.name`
+  // silently broke every mention case here after `npm run init` was run.
+  const base = await loadConfig(
+    undefined,
+    args.home ?? path.join(tmpdir(), "multiharness-eval-no-instance"),
+  );
   const config: Config = args.model
     ? { ...base, roles: { ...base.roles, fast: { ...base.roles["fast"]!, model: args.model } } }
     : base;
@@ -245,8 +316,14 @@ async function main(): Promise<void> {
   const suite = JSON.parse(await readFile(file, "utf8")) as { cases: EvalCase[] };
   const cases = args.only ? suite.cases.filter((c) => c.id === args.only) : suite.cases;
 
-  const step = args.step === "reflect" ? reflect : react;
-  const modelName = resolveStepModel(config, step.name, step.defaultRole).role.model;
+  const modelName =
+    args.step === "knowledge_gatekeeper"
+      ? resolveStepModel(config, args.step, "fast").role.model
+      : resolveStepModel(
+          config,
+          args.step === "reflect" ? reflect.name : react.name,
+          args.step === "reflect" ? reflect.defaultRole : react.defaultRole,
+        ).role.model;
   console.log(
     `\n${args.step} eval — ${modelName}, ${args.runs} run(s) per case` +
       `${args.variant ? `, variant ${args.variant}` : ""}\n`,
@@ -290,7 +367,7 @@ async function main(): Promise<void> {
 
     console.log(
       `${marker} ${testCase.id.padEnd(24)} ${correct}/${attempts.length} ` +
-        `(want ${String(testCase.expect)})  ${detail.padEnd(22)} ${String(avgMs).padStart(6)}ms` +
+        `(want ${String(testCase.expect)})  ${detail.padEnd(34)} ${String(avgMs).padStart(6)}ms` +
         (fellBack ? `  [${fellBack} fell back]` : "") +
         (errored ? `  [${errored} errored]` : ""),
     );

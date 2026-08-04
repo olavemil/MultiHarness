@@ -26,6 +26,7 @@ export interface StepTraceRecord {
   parsed?: unknown;
   call?: CallTrace | undefined;
   contextBlocks?: readonly BuiltBlock[] | undefined;
+  toolCalls?: readonly { name: string; args: unknown; result: string; durationMs: number; error?: string }[] | undefined;
 }
 
 /**
@@ -81,6 +82,14 @@ export async function writeStepTrace(
         estimatedTokens: b.estimatedTokens,
         budgetTokens: b.budgetTokens,
         truncated: b.truncated,
+      })) ?? [],
+    toolCalls:
+      record.toolCalls?.map((c) => ({
+        name: c.name,
+        args: c.args,
+        durationMs: c.durationMs,
+        error: c.error ?? null,
+        result: c.result.slice(0, 500),
       })) ?? [],
     parsed: record.parsed ?? null,
   };
