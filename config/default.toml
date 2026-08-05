@@ -97,10 +97,15 @@ entry_step = "react"
 # Choosing between these is `plan`'s job, not react's — so a named message
 # still skips the react call entirely and goes straight to structuring.
 selectable_steps = ["research", "reason", "draft"]
-plan_step = "plan"
+schedule_step = "schedule"
 respond_step = "respond"
 closing_steps = ["summarize", "review"]
 max_wallclock_ms = 900000
+# Wallclock alone never bounded anything: it is checked between steps, so one
+# research call with a 600s timeout could overrun a 900s session by itself.
+# Counting calls bounds what `plan` actually controls.
+max_model_calls = 24
+max_tool_calls = 24
 # Route situations on "which message is this replying to?" rather than on how
 # many messages back the agent last spoke.
 #
@@ -142,7 +147,7 @@ think = false
 [steps.reflect]
 role = "digest"
 
-[steps.plan]
+[steps.schedule]
 role = "fast"
 timeout_ms = 30000
 
@@ -166,6 +171,14 @@ tools = [
   "wikipedia_search",
   "fetch_url",
 ]
+
+[steps.adjust]
+role = "fast"
+timeout_ms = 30000
+
+[steps.update]
+role = "fast"
+timeout_ms = 30000
 
 [steps.knowledge_gatekeeper]
 role = "fast"

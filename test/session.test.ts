@@ -9,7 +9,12 @@ import { tempWorkingDir, testConfig, testHistory, testIdentity, testMessage } fr
 
 const REACTION = (respond: boolean) =>
   JSON.stringify({ reason: respond ? "asked me directly" : "aimed at someone else", respond });
-const PLAN = JSON.stringify({ reason: "answer directly", steps: [] });
+const SCHEDULE = JSON.stringify({
+  reason: "answer directly",
+  needs_fact: false,
+  needs_thought: false,
+  steps: [],
+});
 const RESPONSE = JSON.stringify({ message: "Node 22 or newer." });
 const REVIEW = JSON.stringify({ assessment: "Answered directly.", quality: 4, recommendations: [] });
 const REFLECTION = JSON.stringify({
@@ -225,34 +230,36 @@ describe("runSession", () => {
     expect(meta.parsed.respond).toBe(true);
   });
 
-  it("skips react even when steps remain to be chosen — plan chooses them", async () => {
-    // The whole point of splitting react and plan: being named settles the
+  it("skips react even when steps remain to be chosen — schedule chooses them", async () => {
+    // The whole point of splitting react and schedule: being named settles the
     // reply, so no model decides that again, and structuring is asked
     // separately. Only plan, respond, and review reach the model.
     const { result, server } = await run(
-      [reply(PLAN), reply(RESPONSE), reply(REVIEW)],
+      [reply(SCHEDULE), reply(RESPONSE), reply(REVIEW)],
       testMessage({ text: "harness, what node version does this project target?" }),
       (c) => ({ ...c, session: { ...c.session, selectable_steps: ["research"] } }),
     );
 
     expect(result.completed.map((s) => s.name)).toEqual([
       "react",
-      "plan",
+      "schedule",
       "respond",
       "summarize",
       "review",
     ]);
     expect(server.requests.map((r) => r.body.model)).toEqual([
-      "test-fast", // plan
+      "test-fast", // schedule
       "test-reasoning", // respond
       "test-digest", // review
     ]);
     expect(await read(result.session.dir, "reaction.md")).toContain("Addressed by name");
   });
 
-  it("runs the steps plan chose, in order, before responding", async () => {
+  it("runs the steps schedule chose, in order, before responding", async () => {
     const chosen = JSON.stringify({
       reason: "needs looking up then thinking about",
+      needs_fact: true,
+      needs_thought: true,
       steps: [
         { step: "research", topic: "find the version" },
         { step: "reason", topic: "work out the implication" },
@@ -274,7 +281,7 @@ describe("runSession", () => {
 
     expect(result.completed.map((s) => s.name)).toEqual([
       "react",
-      "plan",
+      "schedule",
       "research",
       "reason",
       "respond",
@@ -296,6 +303,143 @@ describe("runSession", () => {
     expect(server.requests[0]?.body.messages?.[0]?.content).toContain(
       "does not name the assistant",
     );
+  });
+
+  it("hands the reply over before the closing steps run", async () => {
+    const seen: { text: string; completedSoFar: number }[] = [];
+    const { dir, cleanup } = await tempWorkingDir();
+    const server = await mockOllama([reply(REACTION(true)), reply(RESPONSE), reply(REVIEW)]);
+    cleanups.push(cleanup, server.close);
+
+    const config = await testConfig(server.host, dir);
+    const paths = resolvePaths(config.working_dir);
+    await ensurePaths(paths);
+
+    const result = await runSession({
+      config,
+      paths,
+      message: testMessage(),
+      identity: testIdentity(),
+      history: testHistory(),
+      rng: () => 0,
+      onReply: async (text) => {
+        // Requests so far: react and respond. `review` has not been asked for
+        // yet — which is the point: the person is not waiting on retrospection.
+        seen.push({ text, completedSoFar: server.requests.length });
+      },
+    });
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.text).toBe("Node 22 or newer.");
+    expect(seen[0]?.completedSoFar).toBe(2);
+
+    // ...and the closing steps still run afterwards, making three in total.
+    expect(server.requests).toHaveLength(3);
+    expect(result.completed.map((s) => s.name)).toContain("review");
+  });
+
+  it("cuts the session short when the budget runs out, but still answers", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const chosen = JSON.stringify({
+      reason: "lots to do",
+      steps: [
+        { step: "research", topic: "a" },
+        { step: "reason", topic: "b" },
+        { step: "draft", topic: "c" },
+      ],
+    });
+    const RESEARCH = JSON.stringify({ findings: "…", gaps: [] });
+
+    const { result } = await run(
+      [reply(chosen), reply(RESEARCH), reply(RESPONSE), reply(REVIEW)],
+      testMessage({ text: "harness, dig into this" }),
+      (c) => ({
+        ...c,
+        session: {
+          ...c.session,
+          selectable_steps: ["research", "reason", "draft"],
+          // Enough for plan and research, then nothing.
+          max_model_calls: 2,
+        },
+        steps: { ...c.steps, research: { ...c.steps["research"], tools: [] } },
+      }),
+    );
+    warn.mockRestore();
+
+    // `reason` and `draft` were dropped, but the promised reply was still written.
+    const names = result.completed.map((s) => s.name);
+    expect(names).not.toContain("reason");
+    expect(names).not.toContain("draft");
+    expect(names).toContain("respond");
+    expect(result.reply).toBe("Node 22 or newer.");
+    expect(result.budgetStop).toContain("model calls");
+  });
+
+  it("re-schedules the rest of the session when the supervisor says adjust", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const SCHEDULED = JSON.stringify({
+      reason: "look it up first",
+      needs_fact: true,
+      needs_thought: false,
+      steps: [{ step: "research", topic: "find it" }],
+    });
+    const RESEARCH = JSON.stringify({ findings: "Node 22.", gaps: [] });
+    const ADJUSTED = JSON.stringify({
+      reason: "the question changed; think rather than look further",
+      needs_fact: false,
+      needs_thought: true,
+      steps: [{ step: "reason", topic: "work out the implication" }],
+    });
+    const THOUGHTS = JSON.stringify({ thinking: "…", conclusion: "…", uncertainties: [] });
+
+    const { dir, cleanup } = await tempWorkingDir();
+    const server = await mockOllama([
+      reply(SCHEDULED),
+      reply(RESEARCH),
+      reply(JSON.stringify({ reason: "the ask has narrowed", verdict: "adjust" })),
+      reply(ADJUSTED),
+      reply(THOUGHTS),
+      reply(RESPONSE),
+      reply(REVIEW),
+    ]);
+    cleanups.push(cleanup, server.close);
+
+    const base = await testConfig(server.host, dir);
+    const config = {
+      ...base,
+      session: { ...base.session, selectable_steps: ["research", "reason", "draft"] },
+      steps: { ...base.steps, research: { ...base.steps["research"], tools: [] } },
+    };
+    const paths = resolvePaths(config.working_dir);
+    await ensurePaths(paths);
+
+    const result = await runSession({
+      config,
+      paths,
+      message: testMessage({ text: "harness, what node version does this target?" }),
+      identity: testIdentity(),
+      history: testHistory(),
+      rng: () => 0,
+      // Something arrived mid-session, which is what wakes the supervisor.
+      pending: () => [testMessage({ id: "m2", text: "actually, why that one?" })],
+      ...({} as Record<string, never>),
+    });
+    warn.mockRestore();
+
+    // research ran, the supervisor re-scheduled, and `reason` replaced what
+    // would otherwise have gone straight to the reply.
+    expect(result.completed.map((s) => s.name)).toEqual([
+      "react",
+      "schedule",
+      "research",
+      "adjust",
+      "reason",
+      "respond",
+      "summarize",
+      "review",
+    ]);
+    expect(result.supervisorVerdicts).toEqual([{ step: "research", verdict: "adjust" }]);
+    expect(await read(result.session.dir, "adjust.md")).toContain("reason");
   });
 
   it("numbers sessions monotonically", async () => {

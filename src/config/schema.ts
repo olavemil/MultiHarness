@@ -109,15 +109,23 @@ export const Config = z.object({
      */
     selectable_steps: z.array(z.string()),
     /**
-     * Structures the session once a reply is decided on. Runs only when there
-     * are `selectable_steps` to choose between.
+     * Chooses which steps run in this session, once a reply is decided on.
+     * Runs only when there are `selectable_steps` to choose between. Distinct
+     * from the durable planning document, which is not this.
      */
-    plan_step: z.string().min(1),
+    schedule_step: z.string().min(1),
     /** Runs after the chosen steps whenever `entry_step` decided to reply. */
     respond_step: z.string().min(1),
     /** Always appended, whether or not the agent chose to respond. */
     closing_steps: z.array(z.string()).min(1),
     max_wallclock_ms: z.number().int().positive().default(900_000),
+    /**
+     * Model and tool calls a session may spend. Wallclock alone is not a bound:
+     * a single step's timeout can exceed it, and `plan` can queue several
+     * expensive steps at once.
+     */
+    max_model_calls: z.number().int().positive().default(24),
+    max_tool_calls: z.number().int().positive().default(24),
     // Zod 4 wants a complete default object; derive it from the schema so the
     // defaults live in exactly one place.
     participation: ParticipationConfig.default(() => ParticipationConfig.parse({})),

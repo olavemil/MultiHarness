@@ -13,8 +13,12 @@
         }
       ],
       "history": [],
-      "message": { "from": "research", "text": "Bridge is Docker's default network driver, used when no driver is specified." },
-      "expect": "append"
+      "message": {
+        "from": "research",
+        "text": "Bridge is Docker's default network driver, used when no driver is specified."
+      },
+      "expect": "append",
+      "field": "verdict"
     },
     {
       "id": "append-adds-detail",
@@ -27,8 +31,12 @@
         }
       ],
       "history": [],
-      "message": { "from": "research", "text": "Strip-only mode rejects TypeScript syntax that needs code generation: enums, namespaces, and parameter properties." },
-      "expect": "append"
+      "message": {
+        "from": "research",
+        "text": "Strip-only mode rejects TypeScript syntax that needs code generation: enums, namespaces, and parameter properties."
+      },
+      "expect": "append",
+      "field": "verdict"
     },
     {
       "id": "new-unrelated-subject",
@@ -41,16 +49,24 @@
         }
       ],
       "history": [],
-      "message": { "from": "research", "text": "SQLite's FTS5 extension ships with the standard amalgamation and needs no separate install." },
-      "expect": "new"
+      "message": {
+        "from": "research",
+        "text": "SQLite's FTS5 extension ships with the standard amalgamation and needs no separate install."
+      },
+      "expect": "new",
+      "field": "verdict"
     },
     {
       "id": "new-empty-store",
       "note": "Nothing to overlap with; the shortlist is empty.",
       "store": [],
       "history": [],
-      "message": { "from": "research", "text": "Metal caps GPU-wired memory at roughly 75% of system RAM on Macs above 36 GB." },
-      "expect": "new"
+      "message": {
+        "from": "research",
+        "text": "Metal caps GPU-wired memory at roughly 75% of system RAM on Macs above 36 GB."
+      },
+      "expect": "new",
+      "field": "verdict"
     },
     {
       "id": "reject-conversation-state",
@@ -63,16 +79,24 @@
         }
       ],
       "history": [],
-      "message": { "from": "research", "text": "olav asked what Node version the project targets and said he would check the engines field." },
-      "expect": "reject"
+      "message": {
+        "from": "research",
+        "text": "olav asked what Node version the project targets and said he would check the engines field."
+      },
+      "expect": "reject",
+      "field": "verdict"
     },
     {
       "id": "reject-vague",
       "note": "True of almost anything, findable by nobody.",
       "store": [],
       "history": [],
-      "message": { "from": "research", "text": "There are several considerations worth keeping in mind when making decisions here." },
-      "expect": "reject"
+      "message": {
+        "from": "research",
+        "text": "There are several considerations worth keeping in mind when making decisions here."
+      },
+      "expect": "reject",
+      "field": "verdict"
     },
     {
       "id": "reject-already-stated",
@@ -85,16 +109,24 @@
         }
       ],
       "history": [],
-      "message": { "from": "research", "text": "Metal limits GPU memory to about 75% of system RAM on Macs with more than 36 GB." },
-      "expect": "reject"
+      "message": {
+        "from": "research",
+        "text": "Metal limits GPU memory to about 75% of system RAM on Macs with more than 36 GB."
+      },
+      "expect": "reject",
+      "field": "verdict"
     },
     {
       "id": "reject-task-list",
       "note": "A plan, not knowledge. The store is not a todo list.",
       "store": [],
       "history": [],
-      "message": { "from": "research", "text": "Next steps are to build the eval suite, then wire the tools, then look at the Slack adapter." },
-      "expect": "reject"
+      "message": {
+        "from": "research",
+        "text": "Next steps are to build the eval suite, then wire the tools, then look at the Slack adapter."
+      },
+      "expect": "reject",
+      "field": "verdict"
     }
   ]
 }

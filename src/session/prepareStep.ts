@@ -38,6 +38,8 @@ export interface PrepareArgs {
   rng?: (() => number) | undefined;
   /** Pin a prompt variant instead of sampling one. Used by the eval harness. */
   variant?: string | undefined;
+  /** What the session has left to spend, for steps that can queue more work. */
+  budgetRemaining?: string | undefined;
 }
 
 export async function prepareModelStep(args: PrepareArgs): Promise<PreparedStep> {
@@ -86,6 +88,7 @@ export async function prepareModelStep(args: PrepareArgs): Promise<PreparedStep>
       ? `Yes — the message names the assistant as "${mention}".`
       : "No — the message does not name the assistant.",
     mentioned_other: mentionedOther,
+    budget_remaining: args.budgetRemaining ?? "Not constrained.",
     situation: fragment ? render(fragment.text, { mentioned_other: mentionedOther }) : "",
   };
 

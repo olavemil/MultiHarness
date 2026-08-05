@@ -14,6 +14,14 @@ import { drawParticipation, responseProbability } from "../core/participation.ts
 import { resolveReplyTarget } from "./replyTarget.ts";
 import { loadPriorSession, recordLastSession, type PriorSession } from "../store/priorSession.ts";
 import { prepareModelStep } from "./prepareStep.ts";
+import { runUpdate, type UpdateVerdict } from "./update.ts";
+import {
+  checkBudget,
+  createBudget,
+  describeBudget,
+  remainingMs,
+  type Budget,
+} from "./budget.ts";
 import { getStep } from "../steps/registry.ts";
 import type { AnyStep, ModelStep } from "../steps/types.ts";
 import type { ToolCallRecord, ToolContext } from "../tools/types.ts";
@@ -21,7 +29,7 @@ import type { Reaction } from "../steps/react.ts";
 import type { Reflection } from "../steps/reflect.ts";
 import type { Impression } from "../steps/impression.ts";
 import { saveIdentity } from "../store/identityStore.ts";
-import type { Plan } from "../steps/plan.ts";
+import type { Schedule } from "../steps/schedule.ts";
 import type { Response as StepResponse } from "../steps/respond.ts";
 import type { Paths } from "../store/paths.ts";
 import { createSession, sealStep, workingFilePath, type SessionHandle } from "../store/sessionStore.ts";
@@ -39,6 +47,21 @@ export interface RunSessionOptions {
   /** Injectable so prompt-variant selection is deterministic under test. */
   rng?: (() => number) | undefined;
   signal?: AbortSignal | undefined;
+  /**
+   * Called the moment `respond` seals, before the closing steps run.
+   *
+   * Without it the reply waits on `summarize`, `review`, and `impression` —
+   * ten to twenty seconds of latency after the answer is already written, for
+   * work nobody is waiting on.
+   */
+  onReply?: ((text: string) => Promise<void>) | undefined;
+  /**
+   * Messages that have arrived for this channel since the session began.
+   *
+   * The supervisor runs only when this returns something. Supplied by the
+   * daemon, which owns the inbox; a session cannot see its own queue.
+   */
+  pending?: (() => InboundMessage[]) | undefined;
 }
 
 export interface SessionResult {
@@ -47,6 +70,10 @@ export interface SessionResult {
   /** The reply to send, absent when the agent chose not to respond. */
   reply?: string;
   reaction?: Reaction;
+  /** Set when the budget cut the session short, with the reason. */
+  budgetStop?: string;
+  /** Non-`continue` supervisor verdicts, in the order they were applied. */
+  supervisorVerdicts?: { step: string; verdict: UpdateVerdict }[];
 }
 
 /**
@@ -77,6 +104,24 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
   let reply: string | undefined;
   let closingQueued = false;
   let synthesiseImpression = false;
+  let budgetStop: string | undefined;
+  const supervisorVerdicts: { step: string; verdict: UpdateVerdict }[] = [];
+  let adjusted = false;
+  /**
+   * Messages the supervisor has already ruled on. Without this it re-judges the
+   * same arrivals at every step boundary — seven `fast` calls for one message
+   * in a seven-step session, all reaching the same verdict.
+   */
+  const judged = new Set<string>();
+
+  const budget = createBudget(
+    {
+      maxWallclockMs: config.session.max_wallclock_ms,
+      maxModelCalls: config.session.max_model_calls,
+      maxToolCalls: config.session.max_tool_calls,
+    },
+    startedAt,
+  );
 
   // Settled in code, not by the model. See `core/mentions.ts`.
   const mention = detectMention(message.text, config.agent);
@@ -120,18 +165,89 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
       blockInput: blockInput(),
       mention,
       replyTarget: replyTarget?.kind,
+      budget,
     };
 
     // Being named settles whether to reply, full stop — `react` answers only
     // that question now, so there is nothing left for it to decide and no model
-    // call to make. Structuring still happens, in `plan`.
+    // call to make. Structuring still happens, in `schedule`.
     const isEntry = step.name === config.session.entry_step;
-    const outcome =
+
+    // The supervisor runs *alongside* the step rather than before it, so the
+    // step never stalls waiting to be told whether to keep going. Both models
+    // are resident, so this costs contention rather than a swap.
+    const pending = (opts.pending?.() ?? []).filter((m) => !judged.has(m.id));
+    const cancel = new AbortController();
+    const supervised = pending.length > 0 && !isEntry;
+    if (supervised) for (const m of pending) judged.add(m.id);
+
+    const stepRun =
       isEntry && mention !== undefined
-        ? await sealDirectReaction(step, mention, ctx)
-        : await executeStep(step, next.topic, ctx);
+        ? sealDirectReaction(step, mention, ctx)
+        : executeStep(step, next.topic, { ...ctx, signal: cancel.signal });
+
+    const updateRun = supervised
+      ? runUpdate({
+          config,
+          stepName: step.name,
+          topic: next.topic,
+          pending,
+          promptsDir: opts.promptsDir,
+        }).then((verdict) => {
+          // Cancel at the next tool-call boundary rather than letting a doomed
+          // step run to completion.
+          if (verdict.verdict === "abort" || verdict.verdict === "respond_now") cancel.abort();
+          return verdict;
+        })
+      : undefined;
+
+    // The join point: verdicts are applied here and nowhere else, so a verdict
+    // that arrives about a step state which has already advanced is still safe.
+    const [settled, update] = await Promise.allSettled([stepRun, updateRun]);
+
+    if (settled.status === "rejected") {
+      // Cancelled mid-flight leaves the partial working file, which is the
+      // point of streaming to it. Close the session out rather than failing it.
+      if (!cancel.signal.aborted) throw settled.reason;
+      console.warn(`[session ${session.id}] ${step.name} cancelled by the supervisor.`);
+      queue.length = 0;
+      if (!closingQueued) {
+        closingQueued = true;
+        for (const name of config.session.closing_steps) queue.push({ name, topic: "" });
+      }
+      continue;
+    }
+
+    const outcome = settled.value;
+    const verdict: UpdateVerdict | undefined =
+      update.status === "fulfilled" ? update.value?.verdict : undefined;
+    if (verdict && verdict !== "continue") {
+      supervisorVerdicts.push({ step: step.name, verdict });
+      console.warn(`[session ${session.id}] supervisor: ${verdict} during ${step.name}`);
+    }
 
     completed.push(outcome.completed);
+
+    // `respond_now` cuts the remaining work and goes straight to the reply.
+    if (verdict === "respond_now" && reply === undefined) {
+      queue.length = 0;
+      queue.push({ name: config.session.respond_step, topic: "" });
+    }
+
+    // `adjust` re-schedules the rest of the session in light of what is done.
+    // Once per session: repeated re-planning is its own failure mode, and the
+    // sealed output file is written once by design.
+    if (verdict === "adjust" && !adjusted && reply === undefined) {
+      adjusted = true;
+      queue.unshift({ name: "adjust", topic: "" });
+    }
+
+    if (step.name === "adjust") {
+      const revised = outcome.value as Schedule;
+      queue.length = 0;
+      for (const item of revised.steps) queue.push({ name: item.step, topic: item.topic });
+      queue.push({ name: config.session.respond_step, topic: "" });
+    }
 
     if (step.name === config.session.entry_step) {
       reaction = outcome.value as Reaction;
@@ -165,22 +281,24 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
         // is something to choose between.
         queue.push(
           config.session.selectable_steps.length > 0
-            ? { name: config.session.plan_step, topic: "" }
+            ? { name: config.session.schedule_step, topic: "" }
             : { name: config.session.respond_step, topic: "" },
         );
       }
     }
 
-    if (step.name === config.session.plan_step) {
-      const chosenPlan = outcome.value as Plan;
-      for (const chosen of chosenPlan.steps) {
-        queue.push({ name: chosen.step, topic: chosen.topic });
+    if (step.name === config.session.schedule_step) {
+      const chosen = outcome.value as Schedule;
+      for (const item of chosen.steps) {
+        queue.push({ name: item.step, topic: item.topic });
       }
       queue.push({ name: config.session.respond_step, topic: "" });
     }
 
     if (step.name === config.session.respond_step) {
       reply = (outcome.value as StepResponse).message;
+      // Hand it over now. The closing steps are retrospection and run behind it.
+      await opts.onReply?.(reply);
     }
 
     // `reflect` forms the impression, because it is the step that reads how
@@ -212,18 +330,23 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
 
     // Closing steps go on once every other step has been queued, and are the
     // only thing left after a budget stop.
+    const state = checkBudget(budget);
+    if (!closingQueued && state.exhausted && queue.length > 0) {
+      budgetStop = state.reason;
+      console.warn(
+        `[session ${session.id}] budget exhausted (${state.reason}); dropping ` +
+          `${queue.length} remaining step(s).`,
+      );
+      // A promised reply still gets written, from whatever was gathered.
+      const owed = reaction?.respond === true && reply === undefined;
+      queue.length = 0;
+      if (owed) queue.push({ name: config.session.respond_step, topic: "" });
+    }
+
     if (queue.length === 0 && !closingQueued) {
       closingQueued = true;
       for (const name of config.session.closing_steps) queue.push({ name, topic: "" });
       if (synthesiseImpression) queue.push({ name: "impression", topic: "" });
-    } else if (!closingQueued && Date.now() - startedAt > config.session.max_wallclock_ms) {
-      console.warn(
-        `[session ${session.id}] wallclock budget of ${config.session.max_wallclock_ms}ms ` +
-          `exhausted; dropping ${queue.length} remaining step(s) and closing out.`,
-      );
-      queue.length = 0;
-      closingQueued = true;
-      for (const name of config.session.closing_steps) queue.push({ name, topic: "" });
     }
   }
 
@@ -252,6 +375,8 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
   return {
     session,
     completed,
+    ...(budgetStop !== undefined ? { budgetStop } : {}),
+    ...(supervisorVerdicts.length > 0 ? { supervisorVerdicts } : {}),
     ...(reply !== undefined ? { reply } : {}),
     ...(reaction !== undefined ? { reaction } : {}),
   };
@@ -266,6 +391,7 @@ interface ExecuteContext extends RunSessionOptions {
   mention: string | undefined;
   /** What the reply-target step concluded, when it ran. */
   replyTarget?: "agent" | "other" | "nothing" | undefined;
+  budget: Budget;
 }
 
 /**
@@ -343,6 +469,8 @@ async function executeModelStep(
   const startedAtIso = new Date().toISOString();
 
   const model = resolveStepModel(config, step.name, step.defaultRole, step.defaultTools);
+  // A step must not be able to outlive the session that queued it.
+  const timeoutMs = Math.max(1_000, Math.min(model.timeoutMs, remainingMs(ctx.budget)));
   const prepared = await prepareModelStep({
     step,
     config,
@@ -352,6 +480,7 @@ async function executeModelStep(
     topic,
     promptsDir: ctx.promptsDir,
     rng: ctx.rng,
+    budgetRemaining: describeBudget(ctx.budget),
   });
   const { prompt, fragment, situation, context, renderedPrompt } = prepared;
 
@@ -368,9 +497,10 @@ async function executeModelStep(
       prompt: renderedPrompt,
       tools: resolveTools(model.tools),
       context: toolContext(ctx, step.name),
-      timeoutMs: model.timeoutMs,
+      timeoutMs,
       signal: ctx.signal,
     });
+    ctx.budget.toolCalls += loop.calls.length;
     toolCalls = loop.calls;
     toolTranscript = loop.transcript;
   }
@@ -393,13 +523,14 @@ async function executeModelStep(
       prompt: finalPrompt,
       schema: step.buildSchema(config),
       fallback: () => step.fallback(config),
-      timeoutMs: model.timeoutMs,
+      timeoutMs,
       signal: ctx.signal,
       onDelta: (chunk) => working.write(chunk),
     });
   } finally {
     working.end();
   }
+  ctx.budget.modelCalls += result.trace.attempts.length;
 
   const content = step.render(result.value);
   await sealStep(session, step.outputFile, content);

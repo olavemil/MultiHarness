@@ -5,7 +5,8 @@ Not a chat wrapper: an incoming message triggers a **session**, which runs a con
 **pipeline** of discrete steps, each with its own prompt, model role, context, and tool allowlist.
 
 **[harness.md](harness.md) is the design spec.** Read it before making design decisions.
-It is the source of truth for intent; this file is the source of truth for conventions.
+It is the source of truth for intent; this file is the source of truth for conventions;
+[roadmap.md](roadmap.md) is what is left to build and in what order.
 
 Status: the session loop is closed. `reflect → react → respond → summarize → review` runs end
 to end over a CLI adapter, leaving a full session directory, and each session reads the previous
@@ -50,6 +51,11 @@ Use these terms consistently in code, config, and docs. Don't invent synonyms.
 - **session** — one run of the pipeline, triggered by a message, schedule, or other event.
 - **step** — one unit of work in a session (`reflect`, `react`, `research`, `respond`, …).
   Steps have a prompt file, a context spec, a model role, a tool allowlist, and an output file.
+- **schedule** — choosing which steps run in *this* session. A `fast` call, sealed to
+  `schedule.md`.
+- **plan** — the durable, cross-session planning document, revised as `plan_N.md`. Not yet
+  built. Never use "plan" for in-session step selection: they are different lifetimes, and the
+  filenames collide.
 - **model role** — `fast` / `reasoning` / `digest` / `embed`. Steps name roles; one table
   binds roles to concrete models.
 - **update** — the in-flight supervisor check that runs alongside a step. Distinct from
@@ -113,6 +119,20 @@ question". Injected variables follow the same rule as the file they land in.
 Voice is a property of the whole fragment set, not one file: `${situation}` fragments are
 injected into `react`, so converting one without the others produces a mixed-voice prompt.
 
+**Work being judged is presented as a third party's.** Distinct from the rule above, which is
+about who the model is addressed as; this is about who the *work* belongs to. It matters
+wherever a step assesses output the agent itself produced:
+
+- "Have you made progress?" — defensive. Yes.
+- "Have I made progress?" — supportive. Yes.
+- "Has progress been made here?" — a critical reading, which is the only useful one.
+
+Present the session's output the way channel messages are presented: material to be examined,
+authored by someone else. `review` is currently written in second person about its own session
+and is the obvious candidate for this treatment — it needed an explicit instruction not to
+describe a reply that did not exist, which is exactly the failure this framing prevents. It has
+no eval suite yet, so that is a hypothesis, not a finding.
+
 **Every step declares its context.** Context assembly goes through one shared builder that
 resolves named blocks (`recent_messages`, `last_review`, `reflection`, `user_summary`, …)
 with explicit per-block truncation budgets. Do not hand-assemble context inside a step.
@@ -166,6 +186,23 @@ cut a full session from ~77s to ~18s.
 resident, and it will evict the 27B. `ollama stop <model>` after experimenting.
 
 ## Supervisor loop
+
+**Per-channel actors.** Sessions used to run one at a time *globally*, so a message in one
+channel waited behind a long session in another. Queues are now per channel and drained
+independently; within a channel they stay strictly serial, because per-channel history,
+reflection, and the last-session pointer all assume one writer.
+
+**`update` runs alongside the step, not before it** (`session/update.ts`), so the step never
+stalls waiting to be told whether to keep going. It sees the step's name and topic — never
+partial output, since mid-generation tokens are noise — plus whatever arrived. It judges
+**relevance, not progress**: there is no way to tell from a headline whether work is going well.
+
+Verdicts are applied at one join point and nowhere else, which is what makes a verdict about an
+already-advanced step safe to apply. `abort` and `respond_now` cancel the step through an
+`AbortSignal`; the partial working file survives, which is the reason steps stream to one.
+Falling back to `continue` on a parse failure is deliberate — work underway has been paid for.
+
+The daemon supplies `pending()`, because a session cannot see its own queue.
 
 A step runs as an iterating tool loop. Alongside it:
 
@@ -248,6 +285,13 @@ A full session with a reply runs ~18s; declining to reply runs ~11s.
 
 ## Evaluating steps
 
+One runner drives any registered step (`eval/runner.ts`), using the same `prepareModelStep` a
+session does. A bespoke runner per step meant every new step arrived unmeasured until someone
+wrote one, and the three that existed had each drifted from the live path differently. A case
+declares which output `field` to judge and how (`equals`, `length`, `empty`, `nonempty`,
+`includes`), so a new step needs a case file and nothing else. `knowledge_gatekeeper` keeps a
+dedicated runner because it is a write path with store state, not a pipeline step.
+
 ```bash
 npm run eval                                  # react, 5 runs per case
 npm run eval -- --step reflect --runs 3
@@ -314,6 +358,29 @@ answer.
 
 qwen3:4b is ~2.5× faster and ~8 GB smaller for one flaky case. Worth revisiting if residency
 gets tight — Qwen3 needs `think = false` here or it blows the react timeout mid-stream.
+
+### Open failure: `schedule` reaches for `research` by default
+
+Measured at n=3 over 7 cases: 4 pass, 1 unstable, 2 fail. The failures share one cause, and it
+is not the one the first two cases suggested.
+
+**`research` is the generic "do some work" option; `reason` and `draft` are effectively never
+chosen.** Every failing case picks `research`:
+
+- `opinion-no-steps` — "sqlite or flat files, which would you pick?" → research 0/3
+- `deliberation-wants-reason` — "suggest something better than your gut reaction" → research 0/3
+- `direct-question-no-steps` — "rephrase that more simply" → picked `draft` once in three
+
+The step descriptions in the prompt distinguish the three clearly; the model is not using them
+to discriminate. Adding an explicit fact-vs-judgement rule, with "asked for a judgement" listed
+as a no-steps case, changed nothing at all.
+
+Two prompt rewrites have not moved it, so **do not try a third**. The lever with an actual
+argument behind it is the schema: decode `needs_fact` and `needs_thought` booleans *before*
+`steps`, so the model commits to what kind of gap exists before naming anything to fill it.
+That is the field-order trick that fixed `react` when wording could not, and here it has a
+sharper target — the failure is that "what kind of help is missing" is never asked at all.
+Running `schedule` on a larger model than `fast` remains the other candidate.
 
 **Baseline, phi4, n=5, 11 cases, corrected scoring:** 9 pass · 2 unstable · 0 fail.
 `bare-ack-immediate` sits at 1/5 and is the noise floor described above. Re-measure before
@@ -459,9 +526,9 @@ The first expensive step and the only writer to the knowledge store. Runs a tool
 `reasoning` with thinking on, then answers under its schema. `react` chooses it via
 `selectable_steps`.
 
-**`react` and `plan` are separate calls answering separate questions.** `react` decides only
-whether to reply; `plan` decides how the session is structured, and runs only once a reply is
-settled and there are `selectable_steps` to choose between. Fusing them made one call answer two
+**`react` and `schedule` are separate calls answering separate questions.** `react` decides only
+whether to reply; `schedule` decides which steps run, and only once a reply is settled and there
+are `selectable_steps` to choose between. Fusing them made one call answer two
 unrelated questions and forced `react` to run even when being named had already settled the
 first. Split, a named message skips `react` entirely, and a clear-cut "no" costs one call that
 never has to pick steps it will not use.
@@ -481,15 +548,15 @@ a prompt, which makes it a prompt-injection surface, and it wants deciding on pu
 |---|---|---|---|
 | `reflect` | digest | — | second session onward in a channel |
 | `react` | fast | — | unless the agent was named |
-| `plan` | fast | — | replying, and `selectable_steps` is non-empty |
-| `research` | reasoning | knowledge search/read/write | chosen by `plan` |
-| `reason` | reasoning | none | chosen by `plan` |
-| `draft` | reasoning | none | chosen by `plan` |
+| `schedule` | fast | — | replying, and `selectable_steps` is non-empty |
+| `research` | reasoning | knowledge search/read/write | chosen by `schedule` |
+| `reason` | reasoning | none | chosen by `schedule` |
+| `draft` | reasoning | none | chosen by `schedule` |
 | `respond` | reasoning | — | replying |
 | `summarize` | — | — | always |
 | `review` | digest | — | always |
 
-`reason` deliberately has no tools: it exists to think, and a tool loop would turn it back into
+`schedule` picks from them. `reason` deliberately has no tools: it exists to think, and a tool loop would turn it back into
 research. `draft` writes a first pass with notes for `respond` to sharpen.
 
 ## Tools
@@ -556,14 +623,27 @@ behaviour: what the person wants from an answer, and **whether effort is appreci
 who never engages with careful work is asking for a fast answer, which is useful rather than a
 complaint.
 
+## Session budget
+
+`session/budget.ts`. Wallclock alone was never a bound — it is checked between steps, so one
+`research` call with a 600s timeout could overrun a 900s session by itself. Model and tool calls
+are counted too, because those are what `plan` actually controls now that it can queue research,
+reason, and draft together.
+
+Exhaustion is not a failure: the queue truncates to the closing steps, **plus `respond` if a
+reply was promised and not yet written**. Someone waiting gets an answer built from whatever was
+gathered. A step's timeout is also clamped to the session's remaining wallclock, so a step
+cannot outlive the session that queued it.
+
+**The reply is handed over the moment `respond` seals**, through `onReply`, before the closing
+steps run. It used to wait for `summarize`, `review`, and `impression` — ten to twenty seconds
+of latency after the answer was already written, for retrospection nobody is waiting on.
+
 ## Not built yet
 
-In rough order: an eval suite for the knowledge gatekeeper (see above — it is built but
-unmeasured and currently unreliable); tools exposing the store to steps; `plan`/`research`/`reason`/`draft` with full budget enforcement; the
-parallel supervisor with cancellation and the per-channel actor; the local web UI.
-
-Sessions currently run one at a time globally, and the wallclock budget is only checked between
-steps — a single long step overruns it. Both are resolved by the supervisor milestone.
+See [roadmap.md](roadmap.md). The headline gap: sessions run one at a time **globally**, so a
+message in one channel waits behind a long session in another. The per-channel actor and the
+supervisor loop resolve it and are the next substantial piece.
 
 ## Open decisions
 

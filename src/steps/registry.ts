@@ -1,7 +1,8 @@
 import type { AnyStep } from "./types.ts";
+import { adjust } from "./adjust.ts";
 import { draft } from "./draft.ts";
 import { impression } from "./impression.ts";
-import { plan } from "./plan.ts";
+import { schedule } from "./schedule.ts";
 import { react } from "./react.ts";
 import { reason } from "./reason.ts";
 import { research } from "./research.ts";
@@ -14,7 +15,8 @@ import { summarize } from "./summarize.ts";
 const ALL: readonly AnyStep[] = [
   reflect,
   react,
-  plan,
+  schedule,
+  adjust,
   research,
   reason,
   draft,

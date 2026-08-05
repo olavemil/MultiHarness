@@ -15,7 +15,8 @@
         "from": "olav",
         "text": "harness, what node version does this project target?"
       },
-      "expect": true
+      "expect": true,
+      "field": "respond"
     },
     {
       "id": "named-alongside-other",
@@ -30,7 +31,8 @@
         "from": "olav",
         "text": "harness, can you check what dana pushed?"
       },
-      "expect": true
+      "expect": true,
+      "field": "respond"
     },
     {
       "id": "bare-ack-immediate",
@@ -49,7 +51,8 @@
         "from": "olav",
         "text": "thanks, that worked"
       },
-      "expect": false
+      "expect": false,
+      "field": "respond"
     },
     {
       "id": "answers-agent-question",
@@ -68,7 +71,8 @@
         "from": "olav",
         "text": "the multiharness one"
       },
-      "expect": true
+      "expect": true,
+      "field": "respond"
     },
     {
       "id": "open-question-absent",
@@ -87,7 +91,8 @@
         "from": "olav",
         "text": "does anyone know why the build got slow?"
       },
-      "expect": true
+      "expect": true,
+      "field": "respond"
     },
     {
       "id": "open-question-recent",
@@ -110,7 +115,8 @@
         "from": "olav",
         "text": "does anyone know why the build got slow?"
       },
-      "expect": true
+      "expect": true,
+      "field": "respond"
     },
     {
       "id": "addressed-to-other",
@@ -129,7 +135,8 @@
         "from": "olav",
         "text": "@dana can you take a look at the deploy when you get a chance?"
       },
-      "expect": false
+      "expect": false,
+      "field": "respond"
     },
     {
       "id": "third-party-chatter",
@@ -148,7 +155,8 @@
         "from": "dana",
         "text": "dana: I pushed the fix, should be green now"
       },
-      "expect": false
+      "expect": false,
+      "field": "respond"
     },
     {
       "id": "asked-about-other",
@@ -171,7 +179,8 @@
         "from": "olav",
         "text": "do you think dana would agree with that?"
       },
-      "expect": true
+      "expect": true,
+      "field": "respond"
     },
     {
       "id": "other-thread-absent",
@@ -190,7 +199,8 @@
         "from": "olav",
         "text": "@dana did you see ops' message about the restart?"
       },
-      "expect": false
+      "expect": false,
+      "field": "respond"
     },
     {
       "id": "late-reply-to-agent",
@@ -221,7 +231,8 @@
         "from": "olav",
         "text": "native type stripping \u2014 is that why the parameter properties broke?"
       },
-      "expect": true
+      "expect": true,
+      "field": "respond"
     },
     {
       "id": "greeting-alone",
@@ -231,7 +242,8 @@
         "from": "olav",
         "text": "hey there"
       },
-      "expect": true
+      "expect": true,
+      "field": "respond"
     },
     {
       "id": "greeting-to-room",
@@ -246,7 +258,8 @@
         "from": "olav",
         "text": "morning all, anyone about?"
       },
-      "expect": true
+      "expect": true,
+      "field": "respond"
     }
   ]
 }

@@ -1,0 +1,104 @@
+{
+  "step": "schedule",
+  "note": "Schedule runs once a reply is settled and decides what preparatory work is worth doing. Most cases assert `steps` is empty, because choosing nothing is the common correct answer and over-planning costs minutes. The last two test *which* step, not just whether: wanting facts is `research`, wanting deliberation is `reason`, and conflating them is how a thinking problem turns into a fruitless search.",
+  "cases": [
+    {
+      "id": "direct-question-no-steps",
+      "note": "Answerable from the message alone. Anything queued here is pure cost.",
+      "history": [],
+      "message": {
+        "from": "olav",
+        "text": "harness, can you rephrase that last sentence more simply?"
+      },
+      "field": "steps",
+      "mode": "length",
+      "expect": 0
+    },
+    {
+      "id": "greeting-no-steps",
+      "note": "A greeting needs no preparation whatsoever.",
+      "history": [],
+      "message": {
+        "from": "olav",
+        "text": "harness, morning"
+      },
+      "field": "steps",
+      "mode": "length",
+      "expect": 0
+    },
+    {
+      "id": "opinion-no-steps",
+      "note": "Asks what the agent thinks. Nothing to look up.",
+      "history": [
+        {
+          "from": "olav",
+          "text": "we could use sqlite or flat files for this"
+        }
+      ],
+      "message": {
+        "from": "olav",
+        "text": "harness, which would you pick?"
+      },
+      "field": "steps",
+      "mode": "length",
+      "expect": 0
+    },
+    {
+      "id": "specific-fact-wants-research",
+      "note": "Turns on a specific external fact the agent would otherwise guess at.",
+      "history": [],
+      "message": {
+        "from": "olav",
+        "text": "harness, what does the sqlite-vec README say about arm64 prebuilt binaries?"
+      },
+      "field": "steps",
+      "mode": "nonempty"
+    },
+    {
+      "id": "acknowledgement-no-steps",
+      "note": "Nothing is being asked at all.",
+      "history": [
+        {
+          "from": "agent",
+          "text": "Node 22.18 or newer."
+        }
+      ],
+      "message": {
+        "from": "olav",
+        "text": "harness, perfect, thanks"
+      },
+      "field": "steps",
+      "mode": "length",
+      "expect": 0
+    },
+    {
+      "id": "world-facts-wants-research",
+      "note": "Turns on facts the agent half-knows and should verify: which countries a route crosses, and what is spoken there. Exactly what the store and the web are for.",
+      "history": [],
+      "message": {
+        "from": "olav",
+        "text": "harness, what languages would I need if I crossed Africa north to south by unicycle?"
+      },
+      "field": "steps",
+      "mode": "includes",
+      "expect": "research"
+    },
+    {
+      "id": "deliberation-wants-reason",
+      "note": "Asks explicitly for better than a first instinct. Nothing external is missing \u2014 the material is in the message. Wanting more thought is `reason`, not `research`.",
+      "history": [
+        {
+          "from": "olav",
+          "text": "the gatekeeper embeds every candidate before deciding, so a long research step makes a lot of embedding calls"
+        }
+      ],
+      "message": {
+        "from": "olav",
+        "text": "harness, can you suggest something better than your gut reaction here?"
+      },
+      "field": "steps",
+      "mode": "includes",
+      "expect": "reason"
+    }
+  ]
+}

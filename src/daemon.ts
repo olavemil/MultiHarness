@@ -69,8 +69,25 @@ async function main(): Promise<void> {
 
   const adapter: Adapter = await selectAdapter(config);
 
-  const inbox: InboundMessage[] = [];
-  let draining: Promise<void> | undefined;
+  /**
+   * One queue per channel, drained independently.
+   *
+   * Sessions used to run one at a time *globally*, so a message in one channel
+   * waited behind a five-minute research session in another — the worst
+   * property of the system with Slack connected and several channels live.
+   * Within a channel they stay strictly serial, because per-channel history,
+   * reflection, and the last-session pointer all assume one writer.
+   */
+  const channels = new Map<string, { inbox: InboundMessage[]; draining?: Promise<void> | undefined }>();
+
+  const channelOf = (id: string) => {
+    let existing = channels.get(id);
+    if (!existing) {
+      existing = { inbox: [] };
+      channels.set(id, existing);
+    }
+    return existing;
+  };
 
   async function handle(message: InboundMessage): Promise<void> {
     // History is read before the triggering message is appended, so a step's
@@ -89,62 +106,85 @@ async function main(): Promise<void> {
 
     adapter.status?.(message.channelId, "thinking");
 
-    const result = await runSession({ config, paths, message, identity, history });
+    // Sent the moment `respond` seals, so the person is not waiting on
+    // `summarize`, `review`, and `impression` — which are retrospection and
+    // cost ten to twenty seconds they gain nothing from.
+    const onReply = async (text: string): Promise<void> => {
+      await appendMessage(paths, message.channelId, {
+        id: `${message.id}-reply`,
+        identityId: "agent",
+        author: "agent",
+        text,
+        at: new Date().toISOString(),
+        fromAgent: true,
+      });
+      await adapter.send(message.channelId, text);
+    };
+
+    const result = await runSession({
+      config,
+      paths,
+      message,
+      identity,
+      history,
+      onReply,
+      // The session cannot see its own queue; the daemon owns it. This is what
+      // triggers the supervisor, and it is empty unless someone spoke while a
+      // step was running.
+      pending: () => [...channelOf(message.channelId).inbox],
+    });
     adapter.status?.(message.channelId, `session ${result.session.id}`);
+    for (const { step, verdict } of result.supervisorVerdicts ?? []) {
+      console.warn(`[daemon] supervisor ${verdict} during ${step}`);
+    }
+    if (result.budgetStop) {
+      console.warn(`[daemon] session ${result.session.id} cut short: ${result.budgetStop}`);
+    }
 
     if (result.reply === undefined) {
       adapter.status?.(
         message.channelId,
         `no reply — ${result.reaction?.reason ?? "reaction did not ask for one"}`,
       );
-      return;
     }
-
-    await appendMessage(paths, message.channelId, {
-      id: `${message.id}-reply`,
-      identityId: "agent",
-      author: "agent",
-      text: result.reply,
-      at: new Date().toISOString(),
-      fromAgent: true,
-    });
-    await adapter.send(message.channelId, result.reply);
   }
 
-  /** Sessions run one at a time; concurrent calls join the in-flight drain. */
-  function drain(): Promise<void> {
-    draining ??= (async () => {
+  /** Serial within a channel; concurrent calls join that channel's drain. */
+  function drain(channelId: string): Promise<void> {
+    const channel = channelOf(channelId);
+    channel.draining ??= (async () => {
       try {
-        while (inbox.length > 0) {
-          const message = inbox.shift() as InboundMessage;
+        while (channel.inbox.length > 0) {
+          const message = channel.inbox.shift() as InboundMessage;
           try {
             await handle(message);
           } catch (cause) {
-            // One failed session must not take the daemon down with it.
+            // One failed session must not take the daemon down with it, nor
+            // stall the other channels.
             const detail = cause instanceof Error ? cause.message : String(cause);
-            console.error(`[daemon] session failed: ${detail}`);
-            await adapter.send(message.channelId, `(session failed: ${detail})`);
+            console.error(`[daemon] session failed in ${channelId}: ${detail}`);
+            await adapter.send(channelId, `(session failed: ${detail})`);
           }
         }
       } finally {
-        draining = undefined;
+        channel.draining = undefined;
       }
     })();
-    return draining;
+    return channel.draining;
   }
 
   console.log(`[daemon] working directory: ${paths.root}`);
   console.log(`[daemon] ollama: ${config.ollama.host}`);
 
   await adapter.start((message) => {
-    inbox.push(message);
-    void drain();
+    channelOf(message.channelId).inbox.push(message);
+    void drain(message.channelId);
   });
 
   // Input ended (Ctrl-D, or a closed pipe). Finish what is already in flight
   // before shutting down, so a piped message still runs its session.
   await adapter.closed();
-  await draining;
+  await Promise.all([...channels.values()].map((c) => c.draining));
   await adapter.stop();
 }
 
