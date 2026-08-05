@@ -1,7 +1,7 @@
 import type { ContextBlock } from "./types.ts";
 
 /** Steps whose output is bookkeeping rather than work product. */
-const STRUCTURAL = new Set(["react", "summarize"]);
+const STRUCTURAL = new Set(["react", "restate", "summarize"]);
 
 /**
  * Substantive output of steps already sealed in this session.
@@ -9,6 +9,11 @@ const STRUCTURAL = new Set(["react", "summarize"]);
  * `react`'s decision is a routing artefact and `summarize`'s table is
  * bookkeeping — neither is material for writing a reply or judging one, and
  * `session_summary` already carries the latter for steps that want it.
+ *
+ * `restate` is excluded for both reasons at once: every step that reads this
+ * block also declares `request`, so including it here would spend the budget
+ * twice, and it would arrive under "what earlier steps produced" — framing a
+ * restatement of the question as though it were an answer to it.
  */
 export const priorStepOutput: ContextBlock = {
   name: "prior_step_output",

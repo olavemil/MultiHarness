@@ -18,6 +18,14 @@ ${recent_messages}
 
 ${incoming_message}
 
+## What is being asked, stated in full
+
+${request}
+
+This resolves what the message refers back to and carries forward any limits placed on an
+acceptable answer. Where it and the message differ, it is the fuller statement of the task —
+but it is a restatement, not new information, so nothing in it is a finding.
+
 ## Instructions carried over from earlier in this session
 
 ${reflection}

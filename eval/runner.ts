@@ -29,14 +29,39 @@ export interface EvalCase {
   note?: string;
   history?: CaseMessage[];
   message?: CaseMessage;
-  /** Sealed output of the previous session, for steps that read it. */
-  prior?: { review: string; summary: string; reflection: string };
+  /**
+   * Sealed output of the previous session, for steps that read it. `request` is
+   * how that session understood the question — the artifact `reflect` checks
+   * against how the person then reacted.
+   */
+  prior?: { review: string; summary: string; reflection: string; request?: string; debrief?: string };
+  /**
+   * A correction `reflect` produced earlier in this session, as `restate` sees
+   * it. Empty in almost every case, which is the point.
+   */
+  request_correction?: string;
   /** Output of earlier steps in *this* session, for steps that read it. */
   completed?: { name: string; topic?: string; content: string }[];
   /** Pre-existing knowledge entries, seeded with real embeddings. */
   store?: { topic: string; summary: string; seed: string }[];
   /** Impressions already recorded about the speaker. */
   impressions?: string[];
+  /**
+   * For `debrief`: what arrived while the session was working, and what the
+   * supervisor decided about each. Without these the step has nothing to judge.
+   */
+  arrivals?: { author: string; text: string; verdict: string }[];
+  /** For `compact`: the notes accumulated under one knowledge entry. */
+  entry?: { topic: string; notes: { text: string; session?: string; step?: string }[] };
+  /** For `update`: the step in flight and what it was given to do. */
+  step_name?: string;
+  step_topic?: string;
+  /**
+   * What the session has left, as steps see it. Defaults to a mid-session
+   * figure rather than "unconstrained": `adjust` weighs its choices against
+   * this, so an eval that omitted it would measure a prompt no session renders.
+   */
+  budget_remaining?: string;
   /** Which output field to judge. Defaults per step below. */
   field?: string;
   /** How to compare. Defaults to `equals`. */
@@ -58,6 +83,7 @@ export interface StepAttempt {
 const DEFAULT_FIELD: Record<string, string> = {
   react: "respond",
   reflect: "signal",
+  restate: "resolved",
   schedule: "steps",
   research: "findings",
   reason: "conclusion",
@@ -65,12 +91,17 @@ const DEFAULT_FIELD: Record<string, string> = {
   respond: "message",
   review: "quality",
   impression: "summary",
+  adjust: "steps",
+  update: "verdict",
+  debrief: "unanswered",
+  compact: "compacted",
 };
 
 /** The field that explains it, shown when a case fails. */
 const REASON_FIELD: Record<string, string> = {
   react: "reason",
   reflect: "assessment",
+  restate: "request",
   schedule: "reason",
   research: "findings",
   reason: "thinking",
@@ -78,6 +109,10 @@ const REASON_FIELD: Record<string, string> = {
   respond: "message",
   review: "assessment",
   impression: "reading",
+  adjust: "reason",
+  update: "reason",
+  debrief: "assessment",
+  compact: "reasoning",
 };
 
 export function buildInput(testCase: EvalCase, index = 0) {
@@ -111,7 +146,7 @@ export function buildInput(testCase: EvalCase, index = 0) {
   }));
 
   const prior: PriorSession | undefined = testCase.prior
-    ? { id: "000001-prior", number: 1, ...testCase.prior }
+    ? { id: "000001-prior", number: 1, request: "", debrief: "", ...testCase.prior }
     : undefined;
 
   return {
@@ -121,6 +156,21 @@ export function buildInput(testCase: EvalCase, index = 0) {
     completed,
     prior,
     impressions: (testCase.impressions ?? []).map((text) => ({ text })),
+    requestCorrection: testCase.request_correction ?? "",
+    arrivals: testCase.arrivals ?? [],
+    ...(testCase.entry
+      ? {
+          compactionTarget: {
+            topic: testCase.entry.topic,
+            blocks: testCase.entry.notes.map((n, i) => ({
+              text: n.text,
+              session: n.session ?? `00000${i + 1}`,
+              step: n.step ?? "research",
+              at: new Date(Date.now() - (10 - i) * 86_400_000).toISOString(),
+            })),
+          },
+        }
+      : {}),
   };
 }
 
@@ -171,6 +221,10 @@ export async function runStep(
     mention,
     replyTarget: replyTarget?.kind,
     variant: opts.variant,
+    topic: testCase.entry?.topic ?? testCase.step_topic ?? "",
+    budgetRemaining:
+      testCase.budget_remaining ??
+      "About 300s of wallclock, 14 model calls, and 18 tool calls remain in this session.",
   });
 
   const model = resolveStepModel(config, step.name, step.defaultRole, step.defaultTools);

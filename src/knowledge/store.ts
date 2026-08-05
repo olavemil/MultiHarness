@@ -101,18 +101,44 @@ export function listEntries(db: DatabaseSync, namespace: string): Entry[] {
   ).map(toEntry);
 }
 
+/**
+ * What the entry currently says: blocks that have not been superseded by a
+ * compaction. This is what every reader gets, so compaction takes effect simply
+ * by existing.
+ */
 export function readContents(db: DatabaseSync, entryId: number): ContentBlock[] {
-  return (
+  return rowsToBlocks(
+    db
+      .prepare(
+        `SELECT text, session, step, at FROM contents
+         WHERE entry_id = ? AND superseded_by IS NULL ORDER BY id`,
+      )
+      .all(entryId) as Record<string, unknown>[],
+  );
+}
+
+/**
+ * Every block ever written, superseded ones included.
+ *
+ * The reason compaction is safe: a summary can always be checked against what it
+ * was built from. Nothing in the reply path uses this — it is for inspecting a
+ * compaction after the fact, which is the whole argument for not deleting.
+ */
+export function readAllContents(db: DatabaseSync, entryId: number): ContentBlock[] {
+  return rowsToBlocks(
     db
       .prepare(`SELECT text, session, step, at FROM contents WHERE entry_id = ? ORDER BY id`)
-      .all(entryId) as Record<string, unknown>[]
-  ).map((r) => ({
+      .all(entryId) as Record<string, unknown>[],
+  );
+}
+
+const rowsToBlocks = (rows: Record<string, unknown>[]): ContentBlock[] =>
+  rows.map((r) => ({
     text: String(r["text"]),
     session: String(r["session"]),
     step: String(r["step"]),
     at: String(r["at"]),
   }));
-}
 
 /** Entries with an embedding, for the gatekeeper's nearest-topic prefilter. */
 export function listEmbedded(

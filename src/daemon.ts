@@ -3,7 +3,9 @@ import { createCliAdapter } from "./adapters/cli.ts";
 import type { Config } from "./config/schema.ts";
 import type { Adapter } from "./adapters/types.ts";
 import { loadConfig } from "./config/load.ts";
-import type { InboundMessage } from "./core/types.ts";
+import type { Identity, InboundMessage } from "./core/types.ts";
+import { maintenanceTrigger, messageTrigger } from "./core/trigger.ts";
+import { pendingMaintenance } from "./session/maintenance.ts";
 import { runSession } from "./session/run.ts";
 import { appendMessage, readRecent } from "./store/channelStore.ts";
 import { loadIdentity } from "./store/identityStore.ts";
@@ -78,12 +80,21 @@ async function main(): Promise<void> {
    * Within a channel they stay strictly serial, because per-channel history,
    * reflection, and the last-session pointer all assume one writer.
    */
-  const channels = new Map<string, { inbox: InboundMessage[]; draining?: Promise<void> | undefined }>();
+  interface Channel {
+    inbox: InboundMessage[];
+    draining?: Promise<void> | undefined;
+    /** Last identity seen here, so an idle run knows whose impressions to work on. */
+    lastIdentity?: Identity | undefined;
+    /** When this channel last did anything, for the idle trigger. */
+    lastActivity: number;
+  }
 
-  const channelOf = (id: string) => {
+  const channels = new Map<string, Channel>();
+
+  const channelOf = (id: string): Channel => {
     let existing = channels.get(id);
     if (!existing) {
-      existing = { inbox: [] };
+      existing = { inbox: [], lastActivity: Date.now() };
       channels.set(id, existing);
     }
     return existing;
@@ -121,10 +132,13 @@ async function main(): Promise<void> {
       await adapter.send(message.channelId, text);
     };
 
+    const channel = channelOf(message.channelId);
+    channel.lastIdentity = identity;
+
     const result = await runSession({
       config,
       paths,
-      message,
+      trigger: messageTrigger(message),
       identity,
       history,
       onReply,
@@ -134,6 +148,24 @@ async function main(): Promise<void> {
       pending: () => [...channelOf(message.channelId).inbox],
     });
     adapter.status?.(message.channelId, `session ${result.session.id}`);
+
+    // Arrivals the session took into account are dropped from the inbox rather
+    // than drained into sessions of their own. Without this, a follow-up sent
+    // while a session was working produced a second session for the same
+    // exchange — the supervisor folded the message into the running session
+    // *and* a fresh session answered it independently.
+    const absorbed = new Set(result.consumed ?? []);
+    if (absorbed.size > 0) {
+      channel.inbox = channel.inbox.filter((m) => !absorbed.has(m.id));
+      console.log(
+        `[daemon] session ${result.session.id} absorbed ${absorbed.size} message(s); ` +
+          `not starting separate sessions for them`,
+      );
+    }
+    for (const { text } of result.deferred ?? []) {
+      // Left in the inbox on purpose: deferral means it is owed a session.
+      console.log(`[daemon] deferred to its own session: ${text.slice(0, 60)}`);
+    }
     for (const { step, verdict } of result.supervisorVerdicts ?? []) {
       console.warn(`[daemon] supervisor ${verdict} during ${step}`);
     }
@@ -147,6 +179,32 @@ async function main(): Promise<void> {
         `no reply — ${result.reaction?.reason ?? "reaction did not ask for one"}`,
       );
     }
+  }
+
+  /**
+   * A session with nothing to reply to, run when a channel has gone quiet.
+   *
+   * Nobody is waiting on it, so a failure is logged rather than announced: an
+   * error message in the channel would be the agent breaking a silence to report
+   * on work it started by itself.
+   */
+  async function maintain(
+    channelId: string,
+    identity: Identity,
+    work: { steps: string[]; reason: string },
+  ): Promise<void> {
+    const history = await readRecent(paths, channelId, HISTORY_LIMIT);
+    const result = await runSession({
+      config,
+      paths,
+      trigger: maintenanceTrigger(channelId, work.reason, work.steps),
+      identity,
+      history,
+    });
+    console.log(
+      `[daemon] maintenance session ${result.session.id} in ${channelId} ` +
+        `(${work.steps.join(", ")}): ${work.reason}`,
+    );
   }
 
   /** Serial within a channel; concurrent calls join that channel's drain. */
@@ -168,22 +226,76 @@ async function main(): Promise<void> {
         }
       } finally {
         channel.draining = undefined;
+        channel.lastActivity = Date.now();
       }
     })();
     return channel.draining;
   }
 
+  /**
+   * Idle sweep. Runs maintenance in channels that have gone quiet and have work
+   * waiting, one channel at a time and never alongside a live session.
+   *
+   * Joining the channel's own drain is what keeps that true: per-channel history
+   * and the identity record assume a single writer, and an idle run writing the
+   * identity summary while a session read it would be exactly the race the
+   * per-channel actor exists to prevent.
+   */
+  function sweep(): void {
+    const { enabled, idle_ms } = config.session.maintenance;
+    if (!enabled) return;
+
+    for (const [channelId, channel] of channels) {
+      if (channel.draining || channel.inbox.length > 0) continue;
+      if (Date.now() - channel.lastActivity < idle_ms) continue;
+
+      const identity = channel.lastIdentity;
+      if (!identity) continue;
+
+      channel.draining = (async () => {
+        try {
+          const work = await pendingMaintenance(paths, config, identity);
+          // Most sweeps find nothing, which is the intended behaviour: the
+          // session is the expensive part and it only runs when there is work.
+          if (work) await maintain(channelId, identity, work);
+        } catch (cause) {
+          const detail = cause instanceof Error ? cause.message : String(cause);
+          console.error(`[daemon] maintenance failed in ${channelId}: ${detail}`);
+        } finally {
+          channel.draining = undefined;
+          channel.lastActivity = Date.now();
+        }
+      })();
+    }
+  }
+
   console.log(`[daemon] working directory: ${paths.root}`);
   console.log(`[daemon] ollama: ${config.ollama.host}`);
 
+  // Checked far more often than `idle_ms`, because the sweep itself is a few
+  // comparisons — the cost is in the session it may start, and that is gated on
+  // there being work. `unref` so a pending timer never holds the process open.
+  const sweepTimer = config.session.maintenance.enabled
+    ? setInterval(sweep, Math.min(60_000, config.session.maintenance.idle_ms)).unref()
+    : undefined;
+  if (sweepTimer) {
+    console.log(
+      `[daemon] maintenance sessions on: after ${config.session.maintenance.idle_ms}ms idle ` +
+        `per channel, running ${config.session.maintenance.steps.join(", ")}`,
+    );
+  }
+
   await adapter.start((message) => {
-    channelOf(message.channelId).inbox.push(message);
+    const channel = channelOf(message.channelId);
+    channel.inbox.push(message);
+    channel.lastActivity = Date.now();
     void drain(message.channelId);
   });
 
   // Input ended (Ctrl-D, or a closed pipe). Finish what is already in flight
   // before shutting down, so a piped message still runs its session.
   await adapter.closed();
+  if (sweepTimer) clearInterval(sweepTimer);
   await Promise.all([...channels.values()].map((c) => c.draining));
   await adapter.stop();
 }

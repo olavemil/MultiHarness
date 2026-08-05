@@ -11,17 +11,39 @@ than to rediscover.
 
 ## Where things stand
 
-Built and measured: the session pipeline (`reflect → react → plan → [research | reason |
-draft] → respond → summarize → review → [impression]`), the knowledge store with its gatekeeper,
-identities with append-only impressions, five tools, CLI and Slack adapters, and three eval
-suites (react 13/13, reflect 7/7, gatekeeper 8/8).
+Built and measured: the session pipeline (`reflect → react → restate → schedule → [research |
+reason | draft] → respond → summarize → review → [impression]`), the knowledge store with its
+gatekeeper, identities with append-only impressions, five tools, CLI and Slack adapters, and
+five clean eval suites (react 13/13, reflect 12/12, gatekeeper 8/8, debrief 8/8, compact 7/7)
+plus `restate` at 9/13.
 
-Built but unmeasured: `reason`, `draft`, `impression`, `respond`. `schedule` has a suite and one
-well-characterised failure: it reaches for `research` by default and effectively never picks
-`reason` or `draft` (see CLAUDE.md).
+A reading of the question now survives across sessions — `prior_request` carries the previous
+session's `request.md` forward, and `reflect` emits a `correction` when the new message shows
+that reading was wrong. Both halves measure clean: reflect never invents a correction (3/3 on
+each of three negative cases) and restate acts on one when given it (3/3).
 
-Not built: the supervisor, scheduled triggers, agent-files tools, the `message` step,
-cross-session planning, continued work, the web UI.
+Built but unmeasured: `reason`, `draft`, `impression`, `respond`.
+
+Built with a characterised failure, each written up in CLAUDE.md: `schedule` reaches for
+`research` by default and effectively never picks `reason` or `draft`; `restate` resolves an
+ambiguous referent by conjoining both candidates rather than reporting either; `update` scores
+0/3 on `defer_to_session`.
+
+Triggers are explicit now: a session runs from a `message` or a `maintenance` trigger, and the
+sleep phase exists. Impression synthesis has moved off the reply path into it.
+
+Knowledge compaction is built, strict, and measured 7/7: three or more notes under one entry, one
+entry per maintenance session, within an entry only, and nothing is ever deleted — a compaction
+supersedes the notes it merged and they stay readable.
+
+The survivability items are closed. Timeouts no longer count time the machine slept, a timed-out
+step's partial output is salvaged rather than discarded, a failed step seals `failure.md` saying
+why, and a message arriving mid-session is absorbed instead of opening a second session for the
+same exchange.
+
+Not built: agent-files tools, the `message` step, cross-session planning, continued work, the
+web UI, the rolling digest. The supervisor, maintenance sessions, and everything in 1d are built
+bar live exercise.
 
 ---
 
@@ -32,18 +54,26 @@ join, and cancellation via `AbortSignal` on `abort` / `respond_now`.
 
 **Still open:**
 
-- **`adjust` does nothing yet.** The verdict is recorded and logged, but nothing revises the
-  queue or the plan on it. It wants the cross-session plan (item 3) to have something to revise.
-- **`defer_to_session` does nothing yet** — it should enqueue a follow-up session rather than
-  being dropped.
+- ~~`adjust`~~ — built. Re-schedules the remainder of the session from what has finished; does
+  not touch the durable plan, which is a separate lifetime.
+- ~~`defer_to_session` earns nothing~~ — **it does now.** Item 1d made consumption the default:
+  the daemon drops arrivals the session absorbed, and deferral is the exception that keeps one
+  queued for a session of its own. Its 0/3 score was correct for the build it was measured in,
+  where the two verdicts did the same thing. Re-measure; the case for deleting it has gone.
 - **Concurrent knowledge writes.** The gatekeeper is a read-then-write with no transaction
   around it, so two channels writing the same topic can both decide "new". Introduced by the
   per-channel actor; the unique constraint turns it into an error rather than a duplicate, but
   it is unhandled.
-- **Debouncing.** `update` fires whenever the inbox is non-empty at a step boundary. It should
-  be debounced and capped at one in flight.
-- **No eval suite.** `update` is a `fast` classification with five outcomes and no measurement,
-  which by this project's record means it is probably wrong somewhere.
+- **One in flight.** Each arrival is now judged once rather than at every boundary, but nothing
+  stops two `update` calls overlapping if messages arrive in quick succession.
+- ~~`update` eval~~ — built, 6 cases, 4 pass / 1 unstable / 1 fail. It found the
+  `defer_to_session` redundancy above on its first run.
+- **No eval suite for `adjust`** — still a `fast` classification with no measurement.
+- ~~No feedback on verdicts~~ — `debrief` closes an interrupted session by judging how the
+  interruption was handled, and reports anything that arrived and was never answered. The first
+  thing that ever looks back at a verdict. **8/8 at n=3.** See CLAUDE.md.
+- **Never run live.** Nothing has yet arrived mid-session to trigger any of it.
+- **Overlapping `update` calls.** Still nothing stops two if messages land in quick succession.
 
 ---
 
@@ -83,34 +113,263 @@ is what lets `adjust` rewrite it. The budget added alongside this roadmap alread
 
 ---
 
-## 2. Triggers: scheduled runs and the sleep phase
+## 1c. The request, restated — built
 
-Spec'd in harness.md ("scheduled run, or other trigger") and never built. Unlocks the deferred
-processing idea and the deferral half of parallel instances.
+`steps/restate.ts`, sealed to `request.md`, read through the `request` block by `schedule`,
+`research`, `reason`, `draft`, `respond`, and `review`. Queued once `react` has decided to reply
+and only when the channel has history; `[session] restate_step = ""` turns it off. It also reads
+`prior_request` — the previous session's reading — and `request_correction`, `reflect`'s finding
+that the previous session answered the wrong question. Measured at n=3 over 13 cases: **9 pass ·
+2 unstable · 2 fail** — see CLAUDE.md for what that means.
 
-**Scope**
+**Still open, in the order I would take them:**
 
-- A trigger interface alongside adapters: something that produces a session without an inbound
-  message.
-- Scheduled sessions per channel (idle, cron-ish, or "N minutes after the last exchange").
-- A session kind that has no incoming message, which several context blocks currently assume.
+- **Ambiguity does not register.** Given two candidate referents the model conjoins them and
+  calls the request settled. Field order moved `unresolved-two-candidates` from 0/3 to 1/3 and
+  no further, and `digest` — a 3× larger model — lands in the same place at 2–3× the latency.
+  Three levers spent. What has not been tried is removing the judgement: an ambiguous referent
+  is partly a *countable* property, and `core/window.ts` already gives window-local ids, so
+  "which message does the final one point at, and is there more than one candidate?" could be
+  asked the way `reply_target` asks its question rather than left to a free-text verdict.
+  **Lower priority than it was**, because the correction loop now recovers from it after one
+  round trip, at 3/3. Detecting it up front saves an exchange; it no longer prevents an answer.
+- **Whether `resolved: false` behaves end to end.** `schedule`'s no-steps gate and `respond`'s
+  ask-instead-of-answer branch are both written and neither has been exercised, because nothing
+  has produced a `false` yet outside the eval.
+- **Pre-window memory.** `prior_request` carries the previous session's reading forward, which
+  covers n-1 and nothing older. A conversation that has moved past the 12-message window still
+  loses everything before it except whatever `research` happened to write to the knowledge
+  store. The chosen shape is a rolling digest — see below.
+- **Whether it replaces `topic`.** Still undecided, and now cheap to test: `schedule` sees the
+  restatement, so a topic derived from it rather than invented separately is a small change.
 
-**The sleep phase**
+**The original statement of the gap**, kept because it is what the design answers:
 
-Idle time is where the expensive retrospective work belongs. Candidates, all currently either on
-the critical path or unbuilt:
+Several steps receive `incoming_message` as their whole statement of the task.
+"Could you help me draft a plan for this?" gives them a pronoun with no referent — the details
+are spread across earlier messages, often from several people and sometimes from the agent
+itself. `recent_messages` is present but is a transcript, not a brief: a step has to infer the
+task from it, and each one infers separately and differently.
 
-- **Knowledge compaction** — the dedup and normalisation pass the store was designed for and has
-  never had. Entries accumulate; nothing merges or rewrites them.
-- **Impression synthesis** — currently queued at session end. It has no reason to be there.
-- **Re-reading prior sessions** for patterns the per-session `reflect` cannot see.
+**The shape.** One call per session that boils the recent conversation down to a fully qualified
+statement of what is being asked, sealed as `request.md` and exposed as a `request` context
+block. Same shape as `reply_target` — a session-level call rather than a pipeline step — but
+sealed rather than merely traced, because everything downstream depends on it.
+
+**It is independent of scheduling.** It produces a standalone artefact: the message as it would
+read if the person had stated it in full, without reference to what work might follow. Deciding
+what to do about it is a separate question, asked afterwards with this in hand.
+
+### A discrepancy is a result, not a failure
+
+The output cannot be only a confident sentence. When the arriving message leans on context the
+history does not actually resolve — "draft a plan for this", where *this* could be two things —
+saying so is more useful than picking one:
+
+```
+reasoning     how the message and the history fit together
+request       the fully qualified statement
+resolved      whether the history genuinely settles it
+unresolved    what remains ambiguous, when it does not
+```
+
+**`resolved: false` is a reason to ask, not to research.** Confidently researching the wrong
+interpretation is the expensive failure here: it burns a session, produces a reply about the
+wrong thing, and reads as authoritative while doing it. A one-line clarifying question costs
+seconds and is what a person would do.
+
+That needs no new step or verdict. `schedule` sees both the literal message and the restatement,
+and with `resolved: false` chooses no steps — answering directly *is* asking. `respond` reads
+`unresolved` and asks about exactly those points rather than guessing.
+
+**Both go to whatever decides.** The literal message and the restatement are different evidence:
+the gap between them is the signal. A step given only the polished version cannot see that
+anything was inferred.
+
+**Which steps read what**
+
+| step | reads |
+|---|---|
+| `react` | the literal message only — it judges *addressing*, and the actual words are the evidence |
+| `schedule`, `research`, `reason`, `draft` | the restated request — they need the task, not the wording |
+| `respond` | both — it must answer the actual message in its own terms |
+| `review` | both, deliberately: comparing them is the only way interpretation drift becomes visible |
+
+**Additive, never replacing.** `incoming_message` stays available everywhere. A bad restatement
+that silently replaced the words would poison every step downstream with nothing to check it
+against, which is exactly the failure `review` seeing both is meant to catch.
+
+**When to skip it.** No history means nothing to boil down; a first message in a channel is
+already self-contained. Running it only after `react` has decided to reply also keeps it off the
+declining path, which is the common one.
+
+**How the decisions it carried came out**
+
+- **Role.** Shipped on `fast`, and measured against `digest` rather than assumed: the larger
+  model is 2–3× slower and no better on the cases that fail. Settled.
+- **The failure mode to measure** — a restatement that quietly drops a constraint stated once,
+  early, by somebody other than the last speaker. Three cases of exactly that shape, **3/3
+  each**. This is the half that had to work and it does.
+- **Calibrating `resolved`** — it needed the treatment every binary here has needed, and one it
+  had not: the affirmative case stated first and terminal, and `resolved` decoded *before* the
+  restatement rather than after it. Both directions are in the suite. The false direction is
+  still the open failure above.
+
+---
+
+## 1c-bis. Rolling memory past the message window
+
+**The gap.** `recent_messages` carries what the daemon passes (40 messages, truncated to a token
+budget); `message_window` carries 12 with local ids. Everything older is gone. A channel that has
+been active for a week has no memory of its own first half, except by accident — whatever
+`research` happened to file in the knowledge store.
+
+**Not a chain of restatements.** The obvious cheap idea is to read `request.md` from older
+sessions, since those are already sealed and cost no model call. It does not work as a
+conversation summary: a restatement is *what was asked*, so chaining them yields a list of past
+questions with every answer omitted — and only for sessions where the agent replied, since
+`restate` sits on the answering path. Two further obstacles: sessions are not messages, and
+`last_session.json` points only at the most recent one, so "the session that handled the message
+which just left the window" is not addressable without a new index.
+
+**The shape: a rolling digest.** Once per session, `(previous digest + the messages that just
+left the window) → new digest`. That is the thing that actually carries a conversation forward,
+including the agent's own contributions.
 
 **Decisions it carries**
 
-- A no-message session breaks `incoming_message`, `reply_target`, and the situation routing.
-  Either those blocks learn to be absent, or scheduled sessions run a different entry step.
-- Compaction rewriting knowledge entries conflicts with append-only content. The resolution is
-  probably a new sealed revision rather than mutation, keeping the original blocks intact.
+- **Cost.** One `digest` call per session, ~11s — comparable to `reflect`, already the largest
+  single addition to a session. Two `digest` calls per session is a real latency change and
+  wants measuring against the sleep-phase alternative: this is retrospective work, and item 2
+  argues retrospection belongs in idle time rather than on the reply path.
+- **Compounding, and why it is tolerable here.** Each digest derives from a digest. That is the
+  shape that has burned this project twice — but unlike `reflect`'s recommendations it is
+  *checkable*: `history.jsonl` is append-only ground truth, so a drifted digest can always be
+  diffed against what it came from. Follow the impressions precedent: append revisions, never
+  rewrite, so the originals survive the summary built from them.
+- **Which steps read it.** `restate` is the natural primary consumer — "the thing we discussed
+  last week" is exactly a reference pointing outside the window. But it runs on phi4 at 8k with
+  four blocks already, and the measured lesson across `react`, `schedule`, and the gatekeeper is
+  that fewer, tighter inputs classify better. It has a suite; add the block, add cases whose
+  referent lies outside the window, and re-run rather than assuming it helps.
+- **Triggering.** Cleanest when a message actually falls out of the window, which is not every
+  session. A digest that runs when nothing has aged out is pure cost.
+
+---
+
+## 1c-ter. Recompaction should go back to the notes, not to the last compaction
+
+**The problem.** An entry that has been compacted once and then written to again currently
+recompacts from its *live* blocks — which include the previous compaction. Given writes
+`a, b, c`, a compaction `X`, and then `d, e, f`, the second pass merges `(X, d, e, f)`. `X` is
+already a lossy summary of `a, b, c`, so `Y` is a summary of a summary, and whatever `X` dropped
+is now unrecoverable in practice even though `a, b, c` are still on disk.
+
+That is precisely the compounding shape this project has been bitten by three times —
+`reflect`'s recommendations, the impression summary, and the personality insert — and the answer
+each time was to keep the originals and rebuild from them rather than from the last derivation.
+
+**The fix.** Recompact from the original notes, ignoring intermediate compactions:
+
+```
+stack:  a, b, c, X, d, e, f      (X is the first compaction)
+now:    compact(X, d, e, f)  ->  Y      # summary of a summary
+want:   compact(f, e, d, c, b, a) -> Y  # newest first, straight from the notes
+```
+
+`readAllContents` already returns everything, and compaction blocks are identifiable by their
+provenance step, so the query is the only piece missing.
+
+**Reverse order is a separate idea and probably a good one on its own.** Presenting newest-first
+makes recency *structural* rather than something the model has to infer from timestamps — and
+"a later note supersedes an earlier one" is currently a sentence in the prompt doing work the
+ordering could do for free. It applies to a first compaction just as much as a recompaction. It
+is cheap, and it changes what the suite measures, so it wants re-running rather than assuming.
+
+**The tension to resolve before building it.** Rebuilding from all originals means the input
+grows without bound: an entry written to fifty times feeds fifty notes to the model every pass,
+and eventually blows the context budget the compaction was supposed to relieve. The current
+scheme is bounded precisely because it compounds. Options, none measured:
+
+- Rebuild from originals up to a cap, then fall back to including the last compaction — accepts
+  one level of compounding, bounded.
+- Keep a generation count and only rebuild fully every N compactions.
+- Accept unbounded input and rely on `num_ctx`; simplest, and fine until an entry gets large.
+
+**Not urgent.** Repeated writes to one topic are an unknown quantity — nothing has been through a
+second compaction yet, and the shape of the problem depends on how often that actually happens.
+Worth revisiting once the store has real traffic.
+
+**Already fixed, separately:** the threshold counts *notes* rather than live blocks, so a
+compacted entry needs three fresh writes to re-qualify. Counting blocks let the earlier
+compaction make up the third, halving the threshold on every pass after the first.
+
+---
+
+## 1d. Making steps survivable — built
+
+Three faults from one real session (`galatea/000007`), plus the missing failure record. All four
+are closed; see CLAUDE.md for the design of each.
+
+- ~~**Steps must have room to finish.**~~ A timed-out call now carries its partial output, and
+  `call.ts` parses it by closing brackets and strings the model had not reached. Salvage only
+  ever *adds* closing delimiters, so it can never invent a field. The other two options — capping
+  thinking with `num_predict`, and sizing timeouts to the role — remain untried and unneeded so
+  far.
+- ~~**A timeout must not fire because the machine slept.**~~ `model/deadline.ts` ticks and treats
+  a tick more than 5× late as suspension, which is not charged against the budget. The message
+  names the suspension rather than the model.
+- ~~**No new session while one is in flight.**~~ `runSession` reports `consumed`; the daemon
+  drops those ids from the inbox. **`defer_to_session` now has a distinct action** — it is the
+  exception that keeps an arrival queued — so its 0/3 score is worth re-measuring and the case
+  for deleting the verdict has gone.
+- ~~**A failed step should say why.**~~ `failure.md` is sealed with the step, the cause, the
+  stack, and a pointer to the partial.
+
+**Still open**
+
+- **Never exercised live.** Suspension, salvage, and absorption are all covered by tests and none
+  has happened in a real session.
+- **What a consumed message does to the running session.** It is absorbed rather than answered
+  separately, and `adjust` can re-schedule around it — but the steps that already ran did not see
+  it. `debrief` is now the safety net that reports one arriving and never being answered.
+- **Whether a consumed message lands in channel history immediately.** Unchanged: it does. The
+  alternative — holding it until the absorbing session finishes — was not needed to close this.
+
+---
+
+## 2. Triggers and the sleep phase — built
+
+`core/trigger.ts` makes "why is this session running" explicit, and `[session.maintenance]` runs
+sessions with no incoming message once a channel has gone quiet. Off by default. See CLAUDE.md
+for the design and the two empty-queue bugs it surfaced.
+
+**How the decisions came out**
+
+- **A no-message session breaks `incoming_message`, `reply_target`, and situation routing.** Both
+  halves of the proposed answer were right, for different things: the blocks learned to be absent
+  (`BlockInput.message` is optional, `incoming_message` says nothing was said), *and* maintenance
+  sessions skip the entry step — `react` decides whether to reply, which is not a question a
+  maintenance session has. `reply_target` and situation routing are skipped outright.
+- **Impression synthesis moved**, which was the concrete win. It needed `Identity.synthesisedAt`:
+  the old `total % threshold === 0` gate only works when the check runs exactly once per appended
+  impression, and an idle trigger fires on its own schedule.
+
+**Still open**
+
+- **Never run live.** No maintenance session has fired from the timer rather than from a test.
+- ~~**Knowledge compaction**~~ — built, and the append-only conflict resolved the way this
+  predicted: a compaction supersedes rather than mutates, and the originals stay readable through
+  `readAllContents`. See CLAUDE.md.
+- **The rolling digest** (item 1c-bis) is the other natural tenant, and belongs here rather than
+  on the reply path for exactly the reason impression synthesis did.
+- **Re-reading prior sessions** for patterns a per-session `reflect` cannot see.
+- **Cron-ish scheduling.** Only idle-per-channel is built; "every morning at 09:00" needs a real
+  schedule and has no user yet.
+- **Proactive sessions are a different thing, and are not this.** A maintenance session may not
+  speak. An agent that decides to *start* a conversation when idle is item 4b's engagement axis
+  plus a write path, and fusing it with housekeeping would repeat the `react`/`schedule` mistake:
+  two unrelated questions in one call.
 
 ---
 
@@ -174,6 +433,41 @@ per-channel actor already serialises them.
   nobody asked for.
 - The inbox is empty. This is the same check the supervisor's `update` runs.
 - The previous iteration made progress.
+
+### The progress judgement *is* the status update
+
+Continuation is gated on "has substantial progress been made toward this plan?". That judgement
+is not merely a gate — **it is already the content of a status report**, and computing it twice
+would be both wasteful and a way for the two to disagree. One call, two uses: it decides whether
+to keep going, and its text is what gets posted.
+
+**Reports go back to the message that started the work**, same channel and same thread. A person
+who asked for something and got "I'll look into it" is owed the outcome in the place they asked,
+not in a channel-level broadcast they have to correlate themselves. The `channelId` on the
+trigger already carries this; a continuation session knows where it came from.
+
+**At minimum on finishing or abandoning; optionally in between.** Those two are non-negotiable —
+a plan that quietly dies is worse than one that never started, because somebody is still waiting.
+Intermediate updates are a rate-limiting question, and the limiter is shared with the `message`
+step and status sends.
+
+This does *not* make continuation sessions the same as maintenance sessions. A maintenance
+session may not speak, by design and in code. A continuation reporting on work somebody asked for
+is a reply, late — the person is still waiting on it, which is exactly the distinction.
+
+### Trajectory: should the answers to a status report change course?
+
+The end goal, and further out. Once reports go out, the replies to them are the best possible
+signal about whether the work is still wanted — better than anything inferable from the plan
+itself. "Should recent messages, particularly answers to progress reports, change trajectory?"
+
+That is a **forward-looking** question, and every reflection loop built so far is backward-
+looking: `reflect` reads how the last exchange landed, `debrief` how an interruption was handled,
+`review` how well a reply served. None of them decides what to do next. `adjust` is the closest
+existing thing and it re-schedules within a session, not across one.
+
+Do not fuse it with `debrief`. Same family, different tense, and the project has paid twice for
+merging questions that looked adjacent.
 
 ### Progress is the load-bearing judgement, and the easiest to get wrong
 

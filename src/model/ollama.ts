@@ -6,6 +6,8 @@
  * is where the schema-validation rule is enforced.
  */
 
+import { createDeadline } from "./deadline.ts";
+
 export type OptionValue = number | string | boolean;
 
 export interface ToolCall {
@@ -87,6 +89,28 @@ export class OllamaError extends Error {
 }
 
 /**
+ * A call that ran out of time, carrying whatever had already streamed.
+ *
+ * The partial matters: a 27B with thinking on can produce a complete JSON object
+ * bar its closing brace and then hit the deadline, and discarding a ten-minute
+ * step over a missing `}` is the worst available outcome. `call.ts` tries to
+ * salvage it before falling back.
+ */
+export class OllamaTimeout extends OllamaError {
+  readonly timedOut: boolean;
+  readonly partialContent: string;
+  readonly partialThinking: string;
+
+  constructor(message: string, timedOut: boolean, content: string, thinking: string) {
+    super(message);
+    this.name = "OllamaTimeout";
+    this.timedOut = timedOut;
+    this.partialContent = content;
+    this.partialThinking = thinking;
+  }
+}
+
+/**
  * Streams a chat completion, aggregating deltas into the final content.
  *
  * Throws `OllamaError` on transport or server failure. Those are infrastructure
@@ -100,7 +124,10 @@ export async function chat(
   opts: ChatCallOptions,
 ): Promise<ChatResult> {
   const started = Date.now();
-  const signals = [AbortSignal.timeout(opts.timeoutMs)];
+  // Not `AbortSignal.timeout`: that counts wallclock, so a sleeping laptop
+  // fails every in-flight call and blames the model. See `deadline.ts`.
+  const deadline = createDeadline(opts.timeoutMs);
+  const signals = [deadline.signal];
   if (opts.signal) signals.push(opts.signal);
 
   const body: Record<string, unknown> = {
@@ -166,12 +193,19 @@ export async function chat(
     // stream for a long time before producing any content, which makes this the
     // *likely* timeout path, not an edge case.
     const timedOut = cause instanceof Error && cause.name === "TimeoutError";
-    throw new OllamaError(
+    const slept = deadline.suspendedMs();
+    throw new OllamaTimeout(
       timedOut
-        ? `ollama call to ${request.model} exceeded ${opts.timeoutMs}ms ` +
-          `(${thinking.length} chars of thinking, ${content.length} of content received)`
+        ? `ollama call to ${request.model} exceeded ${opts.timeoutMs}ms of running time ` +
+          `(${thinking.length} chars of thinking, ${content.length} of content received` +
+          `${slept > 0 ? `; ${Math.round(slept / 1000)}s of machine suspension was not counted` : ""})`
         : `ollama stream failed: ${describe(cause)}`,
+      timedOut,
+      content,
+      thinking,
     );
+  } finally {
+    deadline.release();
   }
 
   return {

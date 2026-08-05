@@ -14,6 +14,10 @@ ${recent_messages}
 
 ${incoming_message}
 
+## What the last session took the question to mean
+
+${prior_request}
+
 ## How the last session judged itself
 
 ${last_review}
@@ -25,6 +29,14 @@ ${last_session_summary}
 ## What you told yourself last time
 
 ${last_reflection}
+
+## Anything the last session was interrupted by
+
+${last_debrief}
+
+A question listed there as unanswered is owed a reply and nothing else will remember it. If the
+new message does not raise it again, that is a reason to write a recommendation, not a reason to
+assume it stopped mattering.
 
 ## The question
 
@@ -38,6 +50,25 @@ none either. `thanks` is politeness, not endorsement — treat a bare acknowledg
 Choose `satisfied` or `dissatisfied` only when the message actually reacts to the last answer:
 it acts on it, corrects it, repeats a question you already tried to answer, or says plainly
 that it did or did not help.
+
+## Was the question itself misread?
+
+Distinct from whether the answer was any good. An answer can be careful, accurate, and about
+the wrong thing — and that failure looks nothing like a bad answer from the inside, which is why
+it is asked separately here.
+
+**Usually it was not misread. Leave the correction empty and move on.** A new question on a new
+subject says nothing about the previous reading. Neither does a follow-up that builds on the
+answer, or a bare acknowledgement.
+
+Fill it in only when the new message shows what was actually wanted, plainly: it says the answer
+was about the wrong thing, it points at a different subject than the one that was addressed, or
+it restates the earlier question with the part that was missed made explicit. Then write what
+was actually being asked — the corrected reading itself, not a note that a correction happened.
+
+A correction you made up is worse than a critique you made up. This session's understanding of
+the question is built from it, so an invented one sends the whole session after something nobody
+asked for.
 
 ## Do not invent a critique
 
@@ -80,5 +111,8 @@ Return JSON only, with the fields in this order:
 - `assessment` — two or three sentences on how the last exchange landed and what, if anything,
   the new message tells you. Work it out here first.
 - `signal` — `satisfied`, `dissatisfied`, or `no_signal`. This must follow from the assessment.
+- `correction` — what was actually being asked, when the new message shows the last session
+  answered the wrong reading of the question. Empty otherwise, which is the usual answer, and
+  always empty when `signal` is `no_signal`.
 - `recommendations` — concrete actions for this session. Empty unless something should change.
 - `impression` — one sentence on what this exchange showed about the person, or empty.

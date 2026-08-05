@@ -22,7 +22,9 @@ export const review: ModelStep<Review> = {
   defaultRole: "digest",
   // `session_summary` alone is a timing table — judging the quality of a reply
   // requires seeing the reply, which is what `prior_step_output` carries.
-  contextBlocks: ["incoming_message", "prior_step_output", "session_summary"],
+  // The restatement joins them because comparing it against the literal message
+  // is the only way interpretation drift becomes visible after the fact.
+  contextBlocks: ["incoming_message", "request", "prior_step_output", "session_summary"],
   outputFile: "review.md",
   buildSchema: () => schema,
 

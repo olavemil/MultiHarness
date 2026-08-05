@@ -15,6 +15,13 @@ ${recent_messages}
 
 ${incoming_message}
 
+## The same message, restated in full
+
+${request}
+
+This is what the steps below would receive in place of the transcript. It is a restatement, not
+a correction — the message above is still what has to be answered.
+
 ## Instructions carried over from earlier in this session
 
 ${reflection}
@@ -40,7 +47,12 @@ and the reply gets written from half-finished work. With little left, answer dir
 
 ## How to choose
 
-**First: is a specific fact missing that the assistant does not have?**
+**First: does the restatement say the request is not settled by the conversation?** If it does,
+choose no steps and stop there. What is missing is something only the person who asked can
+supply, and the reply is a question about the open points. Work cannot resolve it, and work done
+on a guessed interpretation is work spent on the wrong question.
+
+**Then: is a specific fact missing that the assistant does not have?**
 
 A fact means something checkable that exists outside this conversation — what a document says,
 what a version number is, what an API returns. If one is missing, choose `research` and name it
@@ -79,3 +91,4 @@ they decide them: work out **what kind of help is missing** before naming anythi
 - `steps` — follow from the two above. `needs_fact` → `research`. `needs_thought` → `reason`.
   Both → research first, then reason. **Neither → empty**, which is the common case. Add
   `draft` only when the reply itself is long or delicate enough to be worth writing twice.
+  A request the restatement reports as unsettled → **empty**, whatever the two booleans say.

@@ -109,6 +109,13 @@ export const Config = z.object({
      */
     selectable_steps: z.array(z.string()),
     /**
+     * Boils the conversation down to a self-contained statement of what is
+     * being asked, sealed and exposed to later steps as the `request` block.
+     * Runs after a reply has been decided on, and only when there is history to
+     * boil down. Empty disables it.
+     */
+    restate_step: z.string().default(""),
+    /**
      * Chooses which steps run in this session, once a reply is decided on.
      * Runs only when there are `selectable_steps` to choose between. Distinct
      * from the durable planning document, which is not this.
@@ -118,6 +125,34 @@ export const Config = z.object({
     respond_step: z.string().min(1),
     /** Always appended, whether or not the agent chose to respond. */
     closing_steps: z.array(z.string()).min(1),
+    /**
+     * Judges how the session handled messages that arrived while it was
+     * working, and reports anything left unanswered. Queued only when something
+     * actually arrived — most sessions are never interrupted. Empty disables it.
+     */
+    debrief_step: z.string().default(""),
+    /**
+     * Sessions with no incoming message, run when a channel has gone quiet.
+     *
+     * The sleep phase: retrospective work belongs in idle time rather than on
+     * the reply path, where it costs somebody a wait. Fires only when there is
+     * actually work to do — a maintenance session with nothing in it is pure
+     * cost, which is the same argument that keeps `restate` off the declining
+     * path.
+     */
+    maintenance: z
+      .object({
+        enabled: z.boolean().default(false),
+        /** Quiet time in a channel before one fires. */
+        idle_ms: z.number().int().positive().default(900_000),
+        /**
+         * What a maintenance session runs. `respond` is refused here whatever
+         * this says — nobody is waiting, and speaking would be the agent
+         * talking to itself.
+         */
+        steps: z.array(z.string()).default(["impression"]),
+      })
+      .default(() => ({ enabled: false, idle_ms: 900_000, steps: ["impression"] })),
     max_wallclock_ms: z.number().int().positive().default(900_000),
     /**
      * Model and tool calls a session may spend. Wallclock alone is not a bound:

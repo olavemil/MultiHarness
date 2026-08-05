@@ -23,7 +23,7 @@ export const research: ModelStep<Research> = {
   kind: "model",
   name: "research",
   defaultRole: "reasoning",
-  contextBlocks: ["user_summary", "recent_messages", "incoming_message", "reflection"],
+  contextBlocks: ["user_summary", "recent_messages", "incoming_message", "request", "reflection"],
   outputFile: "research.md",
   buildSchema: () => schema,
   defaultTools: ["knowledge_search", "knowledge_read", "knowledge_write"],

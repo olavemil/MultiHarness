@@ -16,6 +16,13 @@ ${recent_messages}
 
 ${incoming_message}
 
+## What is being asked, stated in full
+
+${request}
+
+This resolves what the message refers back to and carries forward any limits placed on an
+acceptable answer. A conclusion that ignores one of those limits does not answer the question.
+
 ## What earlier steps produced
 
 ${prior_step_output}

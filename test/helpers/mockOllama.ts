@@ -29,6 +29,13 @@ export type MockReply =
       thinking?: string;
       promptTokens?: number;
       responseTokens?: number;
+      /**
+       * Stream the content and then hold the connection open instead of
+       * finishing. Reproduces the real timeout shape: a step that has written
+       * most of its answer when the deadline fires, which is what makes
+       * salvaging worth doing at all.
+       */
+      hang?: boolean;
     }
   | { kind: "status"; status: number; body: string }
   /** `/api/embed` answers with plain JSON, not the NDJSON stream. */
@@ -115,6 +122,7 @@ export async function mockOllama(replies: MockReply[]): Promise<MockOllama> {
       for (const part of [next.content.slice(0, split), next.content.slice(split)]) {
         res.write(`${JSON.stringify({ message: { content: part }, done: false })}\n`);
       }
+      if (next.hang) return; // Never completed; the caller's deadline decides.
       res.write(
         `${JSON.stringify({
           done: true,

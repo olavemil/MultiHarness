@@ -1,0 +1,253 @@
+{
+  "step": "restate",
+  "note": "Two failure modes, measured separately. The `carries-` cases check that a constraint stated once, early, and usually by somebody other than the last speaker survives into the restatement — a restatement that quietly drops one is worse than none, because it reads as complete and every later step works from it. The `resolved-` cases calibrate the ambiguity flag in both directions: a step that asks for clarification constantly is as useless as one that never does, and `resolved: true` is the ordinary answer.",
+  "cases": [
+    {
+      "id": "carries-language-constraint",
+      "note": "The constraint is three messages back and from a different speaker than the one asking. This is the shape the roadmap named specifically.",
+      "history": [
+        {
+          "from": "olav",
+          "text": "we're writing the import script in TypeScript, no Python anywhere in this repo"
+        },
+        {
+          "from": "kari",
+          "text": "makes sense, the rest of the tooling is already node"
+        },
+        {
+          "from": "kari",
+          "text": "it needs to read the CSV and upsert into the customers table"
+        }
+      ],
+      "message": {
+        "from": "olav",
+        "text": "harness, could you sketch out how you'd do it?"
+      },
+      "field": "request",
+      "mode": "includes",
+      "expect": "typescript"
+    },
+    {
+      "id": "carries-no-dependencies",
+      "note": "A prohibition rather than a positive requirement. Easy to summarise away as unimportant.",
+      "history": [
+        {
+          "from": "olav",
+          "text": "rule for this project: no new npm dependencies, whatever we build has to use what ships with node"
+        },
+        {
+          "from": "kari",
+          "text": "we need some kind of key/value store for the cache"
+        }
+      ],
+      "message": {
+        "from": "olav",
+        "text": "harness, what would you use?"
+      },
+      "field": "request",
+      "mode": "includes",
+      "expect": "depend"
+    },
+    {
+      "id": "resolves-the-pronoun",
+      "note": "\"it\" has one referent and it is two messages back. The restatement has to name it, since later steps never see the transcript.",
+      "history": [
+        {
+          "from": "kari",
+          "text": "the nightly backup job has been failing since tuesday"
+        },
+        {
+          "from": "kari",
+          "text": "the log just says exit code 137"
+        }
+      ],
+      "message": {
+        "from": "olav",
+        "text": "harness, any idea what's causing it?"
+      },
+      "field": "request",
+      "mode": "includes",
+      "expect": "backup"
+    },
+    {
+      "id": "resolved-obvious-referent",
+      "note": "One candidate, unambiguous. Asking for clarification here would be the opposite failure and is the one that annoys people.",
+      "history": [
+        {
+          "from": "olav",
+          "text": "I've been reading about the raft consensus protocol"
+        }
+      ],
+      "message": {
+        "from": "olav",
+        "text": "harness, can you explain how leader election works in it?"
+      },
+      "field": "resolved",
+      "expect": true
+    },
+    {
+      "id": "resolved-merely-broad",
+      "note": "Open-ended is not ambiguous. A broad question has one meaning; it just has a long answer.",
+      "history": [
+        {
+          "from": "kari",
+          "text": "we're picking a database for the new service"
+        }
+      ],
+      "message": {
+        "from": "olav",
+        "text": "harness, what should we be thinking about here?"
+      },
+      "field": "resolved",
+      "expect": true
+    },
+    {
+      "id": "resolved-no-history-needed",
+      "note": "Self-contained already. The restatement should say so rather than manufacturing doubt.",
+      "history": [
+        {
+          "from": "kari",
+          "text": "morning all"
+        }
+      ],
+      "message": {
+        "from": "olav",
+        "text": "harness, what's the difference between a mutex and a semaphore?"
+      },
+      "field": "resolved",
+      "expect": true
+    },
+    {
+      "id": "unresolved-two-candidates",
+      "note": "Two separate things were proposed by two people, and \"that\" could be either. Guessing costs the whole answer; asking costs one line.",
+      "history": [
+        {
+          "from": "kari",
+          "text": "I think we should rewrite the scheduler to use a priority queue"
+        },
+        {
+          "from": "erik",
+          "text": "and separately, we could move the whole worker pool onto the new runtime"
+        }
+      ],
+      "message": {
+        "from": "olav",
+        "text": "harness, could you draft a plan for that?"
+      },
+      "field": "resolved",
+      "expect": false
+    },
+    {
+      "id": "unresolved-which-document",
+      "note": "Two things named in the same message, and \"it\" points at one of them. A different shape from the case above — two candidates from one speaker rather than two proposals from two.",
+      "history": [
+        {
+          "from": "kari",
+          "text": "I've put up the migration RFC and the incident writeup from last week"
+        }
+      ],
+      "message": {
+        "from": "olav",
+        "text": "harness, could you go through it and tell me what's missing?"
+      },
+      "field": "resolved",
+      "expect": false
+    },
+    {
+      "id": "resolved-shared-jargon",
+      "note": "The correct call on a case that was initially expected the other way. A term the participants share and the assistant does not is not an open point: they know what \"tier-2\" means, and asking would be pedantry rather than clarification. Unfamiliar is not ambiguous — the distinction the prompt has to hold.",
+      "history": [
+        {
+          "from": "kari",
+          "text": "we should make the pipeline handle the tier-2 cases properly before launch"
+        }
+      ],
+      "message": {
+        "from": "olav",
+        "text": "harness, how much work is that?"
+      },
+      "field": "resolved",
+      "expect": true
+    },
+    {
+      "id": "adds-nothing",
+      "note": "Nothing constrains the answer and nothing needs resolving. The restatement must not invent scope — the leak this prompt is most exposed to, since `request` is free text.",
+      "history": [
+        {
+          "from": "kari",
+          "text": "anyone know a good way to name test files?"
+        }
+      ],
+      "message": {
+        "from": "olav",
+        "text": "harness, what do you do?"
+      },
+      "field": "resolved",
+      "expect": true
+    },
+    {
+      "id": "correction-overrides-transcript",
+      "note": "The recovery path. The transcript still reads ambiguously — two proposals, one pronoun — but reflect has since established which one was meant. A correction is later evidence than anything in the transcript and has to win.",
+      "history": [
+        {
+          "from": "kari",
+          "text": "I think we should rewrite the scheduler to use a priority queue"
+        },
+        {
+          "from": "erik",
+          "text": "and separately, we could move the whole worker pool onto the new runtime"
+        }
+      ],
+      "message": {
+        "from": "olav",
+        "text": "harness, could you draft a plan for that?"
+      },
+      "request_correction": "They want a plan for moving the worker pool onto the new runtime, not for the scheduler rewrite.",
+      "field": "request",
+      "mode": "includes",
+      "expect": "worker pool"
+    },
+    {
+      "id": "correction-settles-it",
+      "note": "Same case, on the verdict rather than the text. Asking again about something the person has just finished explaining is worse than having asked the first time.",
+      "history": [
+        {
+          "from": "kari",
+          "text": "I think we should rewrite the scheduler to use a priority queue"
+        },
+        {
+          "from": "erik",
+          "text": "and separately, we could move the whole worker pool onto the new runtime"
+        }
+      ],
+      "message": {
+        "from": "olav",
+        "text": "harness, could you draft a plan for that?"
+      },
+      "request_correction": "They want a plan for moving the worker pool onto the new runtime, not for the scheduler rewrite.",
+      "field": "resolved",
+      "expect": true
+    },
+    {
+      "id": "prior-reading-does-not-leak",
+      "note": "A previous reading is context, not an answer. A new question on a new subject must not inherit the last session's subject just because it is in the prompt — the failure mode that comes with carrying anything forward.",
+      "history": [
+        {
+          "from": "olav",
+          "text": "how does the response cache decide what to evict?"
+        },
+        {
+          "from": "agent",
+          "text": "Least-recently-used."
+        }
+      ],
+      "message": {
+        "from": "olav",
+        "text": "harness, unrelated — what's the default socket timeout?"
+      },
+      "field": "request",
+      "mode": "includes",
+      "expect": "timeout"
+    }
+  ]
+}

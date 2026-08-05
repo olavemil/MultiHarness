@@ -86,6 +86,10 @@ last_session_summary = 500
 last_reflection = 700
 reflection = 700
 incoming_message = 600
+# One paragraph plus open points. Generous enough that truncation would mean the
+# restatement went wrong, not that the budget is tight — and truncating this
+# block is exactly how a constraint gets dropped downstream.
+request = 500
 
 # --- Session -----------------------------------------------------------------
 
@@ -97,9 +101,24 @@ entry_step = "react"
 # Choosing between these is `plan`'s job, not react's — so a named message
 # still skips the react call entirely and goes straight to structuring.
 selectable_steps = ["research", "reason", "draft"]
+# Restates the incoming message as a self-contained request before anything acts
+# on it. "Could you draft a plan for this?" gives a step a pronoun with no
+# referent; recent_messages is a transcript rather than a brief, so every step
+# infers the task from it separately and differently.
+#
+# Runs only once a reply is settled, and only when the channel has history —
+# a first message is already self-contained. Set to "" to turn it off.
+restate_step = "restate"
 schedule_step = "schedule"
 respond_step = "respond"
 closing_steps = ["summarize", "review"]
+# Runs only when messages arrived while the session was working, which most
+# sessions never see. Two jobs: report anything that was asked and never
+# answered — a real failure mode, since a mid-session arrival can be noticed and
+# then lost when the session finishes the task it was already committed to — and
+# judge whether cutting the session short was the right call. That judgement is
+# the only look anything ever takes at a supervisor verdict. Set "" to disable.
+debrief_step = "debrief"
 max_wallclock_ms = 900000
 # Wallclock alone never bounded anything: it is checked between steps, so one
 # research call with a 600s timeout could overrun a 900s session by itself.
@@ -124,6 +143,34 @@ reply_target = true
 # mistaking one exchange for a pattern.
 impression_threshold = 5
 
+# --- Maintenance sessions (the sleep phase) ----------------------------------
+# Sessions with no incoming message, run when a channel has gone quiet.
+#
+# Retrospective work belongs in idle time, not on the reply path where it costs
+# somebody a wait. Impression synthesis is the first tenant: it was queued at the
+# end of every session, and the summary it writes is for the *next* session
+# anyway, so nobody gained from paying for it while they waited.
+#
+# Fires only when there is work to do — a maintenance session with nothing in it
+# opens a session directory, spends a digest call, and summarises having done
+# nothing. `respond` is refused here whatever `steps` says: nobody is waiting,
+# and speaking unprompted into a quiet channel would be the agent talking to
+# itself.
+#
+# Off by default. Turning it on moves synthesis off the session tail; leaving it
+# off keeps the old behaviour exactly, so no capability depends on this setting.
+
+[session.maintenance]
+enabled = false
+idle_ms = 900000
+# "impression" synthesises a person's summary once enough new observations have
+# accumulated. "compact" merges one knowledge entry that has three or more
+# separate notes under it — the most-appended one, one entry per session, so a
+# bad pass touches a single topic and a backlog clears over several quiet
+# periods. Compaction supersedes rather than deletes: the notes it was built
+# from stay on disk and can be read back with readAllContents.
+steps = ["impression", "compact"]
+
 # --- Per-step overrides ------------------------------------------------------
 # Each step declares its own default role; these entries override it.
 
@@ -146,6 +193,13 @@ think = false
 
 [steps.reflect]
 role = "digest"
+
+[steps.restate]
+# `fast` first, then measure. Synthesising a task from several speakers is more
+# than the classification work this role has been reliable at, so it is a
+# likelier candidate for `reasoning` than the other fast steps are.
+role = "fast"
+timeout_ms = 30000
 
 [steps.schedule]
 role = "fast"
@@ -189,6 +243,14 @@ role = "fast"
 timeout_ms = 30000
 
 [steps.review]
+role = "digest"
+
+[steps.debrief]
+role = "digest"
+
+# Merging notes is exactly digest work, and losing a fact is the failure mode —
+# so this is one of the last places to trade the 27B for something smaller.
+[steps.compact]
 role = "digest"
 
 [steps.impression]

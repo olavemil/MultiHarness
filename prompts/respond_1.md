@@ -13,6 +13,10 @@ ${recent_messages}
 
 ${incoming_message}
 
+## The same message, restated in full
+
+${request}
+
 ## What earlier steps in this session produced
 
 ${prior_step_output}
@@ -20,6 +24,15 @@ ${prior_step_output}
 ## How to reply
 
 Answer the message directly, and lead with the answer rather than working up to it.
+
+Reply to the message as written. The restatement is there so you can see what it refers back to
+and what constrains an acceptable answer — it is not the wording you answer, and you should
+never quote it back or point out that it exists.
+
+**When the restatement lists open points, ask about them instead of answering.** A short,
+specific question about exactly those points is the right reply. Guessing which reading was
+meant and answering it at length is the expensive mistake: it reads as authoritative and it may
+be about the wrong thing entirely.
 
 Match the register of the channel. Read how these people talk to each other and talk that way.
 

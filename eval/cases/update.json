@@ -1,0 +1,60 @@
+{
+  "step": "update",
+  "note": "The supervisor runs alongside a step and judges relevance, not progress. `step_name` and `step_topic` describe the work in flight; `message` is what arrived while it ran. `continue` is the common correct answer — abandoning work already paid for needs a reason.",
+  "cases": [
+    {
+      "id": "unrelated-chatter",
+      "note": "Someone else's small talk. Changes nothing about the work.",
+      "step_name": "research",
+      "step_topic": "find which node version the project targets",
+      "message": { "from": "dana", "text": "coffee machine is broken again" },
+      "field": "verdict",
+      "expect": "continue"
+    },
+    {
+      "id": "unrelated-question-to-other",
+      "note": "A real question, but for someone else and on another subject.",
+      "step_name": "research",
+      "step_topic": "find which node version the project targets",
+      "message": { "from": "dana", "text": "@kim did the staging deploy finish?" },
+      "field": "verdict",
+      "expect": "continue"
+    },
+    {
+      "id": "question-withdrawn",
+      "note": "The work is now pointless — the asker took it back.",
+      "step_name": "research",
+      "step_topic": "find which node version the project targets",
+      "message": { "from": "olav", "text": "actually never mind, I found it myself" },
+      "field": "verdict",
+      "expect": "abort"
+    },
+    {
+      "id": "answered-by-someone-else",
+      "note": "Somebody supplied the answer while the agent was looking it up.",
+      "step_name": "research",
+      "step_topic": "find which node version the project targets",
+      "message": { "from": "dana", "text": "it's node 22, it's in the engines field" },
+      "field": "verdict",
+      "expect": "abort"
+    },
+    {
+      "id": "narrowed-question",
+      "note": "Still worth doing, but the shape changed. This is what adjust is for.",
+      "step_name": "research",
+      "step_topic": "find which node version the project targets",
+      "message": { "from": "olav", "text": "specifically I care about what type stripping needs, not the general answer" },
+      "field": "verdict",
+      "expect": "adjust"
+    },
+    {
+      "id": "separate-matter",
+      "note": "A different subject entirely, deserving its own session rather than this one.",
+      "step_name": "research",
+      "step_topic": "find which node version the project targets",
+      "message": { "from": "olav", "text": "unrelated, but can you look at why the Slack adapter drops thread replies?" },
+      "field": "verdict",
+      "expect": "defer_to_session"
+    }
+  ]
+}

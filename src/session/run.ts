@@ -8,7 +8,11 @@ import { runToolLoop } from "../model/toolLoop.ts";
 import { resolveTools } from "../tools/registry.ts";
 import { openKnowledgeDb } from "../knowledge/db.ts";
 import { appendImpression, impressionCount, readImpressions } from "../knowledge/impressions.ts";
+import { applyCompaction, compactionCandidates, COMPACT_STEP } from "../knowledge/compaction.ts";
+import { KNOWLEDGE } from "../knowledge/db.ts";
+import type { ContentBlock } from "../knowledge/store.ts";
 import { detectMention } from "../core/mentions.ts";
+import { triggeringMessage, type Trigger } from "../core/trigger.ts";
 import { computeSituation } from "../core/situation.ts";
 import { drawParticipation, responseProbability } from "../core/participation.ts";
 import { resolveReplyTarget } from "./replyTarget.ts";
@@ -28,7 +32,9 @@ import type { ToolCallRecord, ToolContext } from "../tools/types.ts";
 import type { Reaction } from "../steps/react.ts";
 import type { Reflection } from "../steps/reflect.ts";
 import type { Impression } from "../steps/impression.ts";
+import type { Compaction } from "../steps/compact.ts";
 import { saveIdentity } from "../store/identityStore.ts";
+import type { Adjustment } from "../steps/adjust.ts";
 import type { Schedule } from "../steps/schedule.ts";
 import type { Response as StepResponse } from "../steps/respond.ts";
 import type { Paths } from "../store/paths.ts";
@@ -38,7 +44,11 @@ import { writeStepTrace } from "../store/trace.ts";
 export interface RunSessionOptions {
   config: Config;
   paths: Paths;
-  message: InboundMessage;
+  /**
+   * Why this session is running. A message is the common case; a maintenance
+   * trigger runs the retrospective steps with nothing to reply to.
+   */
+  trigger: Trigger;
   identity: Identity;
   history: readonly ChannelMessage[];
   promptsDir?: string | undefined;
@@ -74,6 +84,22 @@ export interface SessionResult {
   budgetStop?: string;
   /** Non-`continue` supervisor verdicts, in the order they were applied. */
   supervisorVerdicts?: { step: string; verdict: UpdateVerdict }[];
+  /**
+   * Arrivals judged to need their own session. The daemon leaves these in the
+   * inbox, so they open a session of their own — which is what makes
+   * `defer_to_session` an action rather than a note.
+   */
+  deferred?: { id: string; text: string }[];
+  /**
+   * Arrivals this session took into account and the daemon should therefore not
+   * open a new session for.
+   *
+   * Without this, a follow-up sent while a session was running started a second
+   * session for the same exchange: two sessions, two replies, and the second
+   * reasoning about the message with no idea the first was still working. Seen
+   * live as `galatea/000006`/`000007`.
+   */
+  consumed?: string[];
 }
 
 /**
@@ -84,8 +110,11 @@ export interface SessionResult {
  * flow, which is what lets `adjust` rewrite it once the supervisor lands.
  */
 export async function runSession(opts: RunSessionOptions): Promise<SessionResult> {
-  const { config, paths, message, identity, history } = opts;
+  const { config, paths, trigger, identity, history } = opts;
   const startedAt = Date.now();
+  const channelId = trigger.channelId;
+  const message = triggeringMessage(trigger);
+  const maintenance = trigger.kind === "maintenance";
 
   const session = await createSession(paths);
   const completed: CompletedStep[] = [];
@@ -93,12 +122,29 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
   // `reflect` needs a previous session in *this channel* to reflect on, so the
   // first session in a channel skips it rather than reflecting on nothing.
   const prior: PriorSession | undefined =
-    opts.prior ?? (await loadPriorSession(paths, message.channelId));
+    opts.prior ?? (await loadPriorSession(paths, channelId));
 
-  const queue: { name: string; topic: string }[] = [
-    ...(prior ? [{ name: config.session.reflect_step, topic: "" }] : []),
-    { name: config.session.entry_step, topic: "" },
-  ];
+  // A maintenance session has nothing to react to and nobody waiting, so it
+  // skips the entry step entirely and runs a fixed queue. There is no decision
+  // for a model to make about whether to reply: it may not.
+  const queue: { name: string; topic: string }[] = maintenance
+    ? (trigger.steps ?? config.session.maintenance.steps)
+        // Refused here rather than trusted to config, and refused at queue
+        // construction rather than at dispatch: skipping mid-loop would also
+        // skip the closing steps, leaving a session directory with no record
+        // that anything ran at all.
+        .filter((name) => {
+          if (name !== config.session.respond_step) return true;
+          console.warn(
+            `[session] "${name}" is not available to a maintenance session; ignoring it.`,
+          );
+          return false;
+        })
+        .map((name) => ({ name, topic: trigger.reason }))
+    : [
+        ...(prior ? [{ name: config.session.reflect_step, topic: "" }] : []),
+        { name: config.session.entry_step, topic: "" },
+      ];
 
   let reaction: Reaction | undefined;
   let reply: string | undefined;
@@ -107,12 +153,26 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
   let budgetStop: string | undefined;
   const supervisorVerdicts: { step: string; verdict: UpdateVerdict }[] = [];
   let adjusted = false;
+  /** Arrivals the supervisor marked as owed their own answer. */
+  const deferred: { id: string; text: string }[] = [];
   /**
    * Messages the supervisor has already ruled on. Without this it re-judges the
    * same arrivals at every step boundary — seven `fast` calls for one message
    * in a seven-step session, all reaching the same verdict.
    */
   const judged = new Set<string>();
+  /**
+   * Arrivals this session absorbed. Reported to the daemon, which drops them
+   * from the inbox instead of draining them into sessions of their own.
+   */
+  const consumedIds = new Set<string>();
+  /**
+   * What arrived mid-session and what was decided about it, for `debrief`.
+   * Collected here because it exists nowhere else: these messages are not in
+   * `recent_messages` (history was read before the session began) and the
+   * verdicts live only in the trace.
+   */
+  const arrivals: { author: string; text: string; verdict: string }[] = [];
 
   const budget = createBudget(
     {
@@ -124,13 +184,14 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
   );
 
   // Settled in code, not by the model. See `core/mentions.ts`.
-  const mention = detectMention(message.text, config.agent);
+  const mention = message ? detectMention(message.text, config.agent) : undefined;
   let participationTrace: Record<string, unknown> | undefined;
 
   // Only worth asking when the agent was not named: being named already settles
-  // the decision, and this call exists to inform that decision.
+  // the decision, and this call exists to inform that decision. A maintenance
+  // session is replying to nothing, so there is no target to resolve.
   const replyTarget =
-    config.session.reply_target && mention === undefined
+    message && config.session.reply_target && mention === undefined
       ? await resolveReplyTarget(config, { message, history, identity, completed: [] }, {
           promptsDir: opts.promptsDir,
           rng: opts.rng,
@@ -142,6 +203,52 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
   let db: ReturnType<typeof openKnowledgeDb> | undefined;
   const knowledgeDb = () => (db ??= openKnowledgeDb(paths.knowledge));
   let impressions: { text: string }[] = [];
+  /** Set by `reflect` when the previous session answered the wrong question. */
+  let requestCorrection = "";
+
+  // In an ordinary session `reflect` loads these as a side effect of appending
+  // to them. A maintenance session does not run `reflect`, so without this the
+  // `impression` step would synthesise a summary from an empty list — the exact
+  // work it exists to do, done over nothing.
+  if (maintenance) {
+    impressions = readImpressions(knowledgeDb(), identity.id).map((c) => ({ text: c.text }));
+  }
+
+  /**
+   * The entry `compact` is working on. Chosen here, once, so the step and the
+   * write that follows it cannot disagree about which entry was meant.
+   *
+   * One per session — the most-appended. Compaction is the first thing that
+   * rewrites what the agent knows, so a bad pass touches one topic, and a store
+   * that has fallen behind catches up over several quiet periods.
+   */
+  let compactionTarget: { id: number; topic: string; blocks: ContentBlock[] } | undefined;
+  if (maintenance && queue.some((q) => q.name === "compact")) {
+    const [best] = compactionCandidates(knowledgeDb(), KNOWLEDGE);
+    if (best) {
+      compactionTarget = { id: best.entry.id, topic: best.entry.topic, blocks: best.blocks };
+      for (const item of queue) {
+        if (item.name === "compact") item.topic = best.entry.topic;
+      }
+    } else {
+      // Nothing qualifies. Dropped rather than run on nothing, which would spend
+      // a digest call to summarise an empty list.
+      for (let i = queue.length - 1; i >= 0; i--) {
+        if (queue[i]?.name === "compact") queue.splice(i, 1);
+      }
+    }
+  }
+
+  // One guard, after every path that can add to or remove from the starting
+  // queue. The closing steps are appended from *inside* the loop, so a session
+  // that starts empty runs nothing and seals nothing — a session directory with
+  // no record in it, indistinguishable from a session that never ran. Two
+  // separate routes reach that state: every configured maintenance step being
+  // refused, and the only step queued having no work to do.
+  if (queue.length === 0) {
+    closingQueued = true;
+    queue.push({ name: "summarize", topic: "" });
+  }
 
   const blockInput = (): BlockInput => ({
     message,
@@ -150,6 +257,11 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
     completed,
     prior,
     impressions,
+    requestCorrection,
+    arrivals,
+    ...(compactionTarget
+      ? { compactionTarget: { topic: compactionTarget.topic, blocks: compactionTarget.blocks } }
+      : {}),
   });
 
   try {
@@ -208,7 +320,15 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
     if (settled.status === "rejected") {
       // Cancelled mid-flight leaves the partial working file, which is the
       // point of streaming to it. Close the session out rather than failing it.
-      if (!cancel.signal.aborted) throw settled.reason;
+      if (!cancel.signal.aborted) {
+        // Before it propagates: record *why*, in the session. Until now a dead
+        // step left a partial file with no meta.json and the reason existed only
+        // in the daemon's console, so a failed session could not be diagnosed
+        // from its own directory — in a system whose first rule is trace
+        // everything.
+        await sealFailure(session, step.name, next.topic, settled.reason);
+        throw settled.reason;
+      }
       console.warn(`[session ${session.id}] ${step.name} cancelled by the supervisor.`);
       queue.length = 0;
       if (!closingQueued) {
@@ -221,6 +341,30 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
     const outcome = settled.value;
     const verdict: UpdateVerdict | undefined =
       update.status === "fulfilled" ? update.value?.verdict : undefined;
+    // Deferral is what the inbox does anyway; recording it is the whole
+    // implementation, so an owed answer is visible rather than merely queued.
+    if (verdict === "defer_to_session") {
+      for (const m of pending) {
+        deferred.push({ id: m.id, text: m.text });
+        // Explicitly *not* consumed: deferral's whole meaning is that this one
+        // gets a session to itself. Now that consumption is the default, the
+        // verdict finally names a distinct action — which is what it lacked
+        // when it measured 0/3 against `continue`.
+        consumedIds.delete(m.id);
+      }
+    } else if (supervised) {
+      for (const m of pending) consumedIds.add(m.id);
+    }
+
+    // Recorded whatever the verdict, including `continue`: a message the session
+    // decided to carry on past is exactly the one most likely to end up
+    // unanswered, and `debrief` cannot check what it cannot see.
+    if (supervised) {
+      for (const m of pending) {
+        arrivals.push({ author: m.authorName, text: m.text, verdict: verdict ?? "continue" });
+      }
+    }
+
     if (verdict && verdict !== "continue") {
       supervisorVerdicts.push({ step: step.name, verdict });
       console.warn(`[session ${session.id}] supervisor: ${verdict} during ${step.name}`);
@@ -243,7 +387,7 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
     }
 
     if (step.name === "adjust") {
-      const revised = outcome.value as Schedule;
+      const revised = outcome.value as Adjustment;
       queue.length = 0;
       for (const item of revised.steps) queue.push({ name: item.step, topic: item.topic });
       queue.push({ name: config.session.respond_step, topic: "" });
@@ -260,7 +404,8 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
           {
             history,
             mentioned: mention !== undefined,
-            directFollowup: computeSituation(message.text, history, config.agent).distance === "immediate",
+            directFollowup:
+              computeSituation(message?.text ?? "", history, config.agent).distance === "immediate",
             modelSaidYes: reaction.respond,
           },
           participation,
@@ -277,6 +422,14 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
       }
 
       if (reaction.respond) {
+        // Everything downstream needs the task, not the wording. Queued here
+        // rather than at session start so it stays off the declining path,
+        // which is the common one; skipped without history, since a first
+        // message in a channel is already self-contained.
+        if (config.session.restate_step !== "" && history.length > 0) {
+          queue.push({ name: config.session.restate_step, topic: "" });
+        }
+
         // Structuring is a separate question, and only worth asking when there
         // is something to choose between.
         queue.push(
@@ -305,7 +458,13 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
     // *they* reacted; `review` judges the agent's own work. The harness records
     // it — reflect runs on `digest` with tools refused and cannot write.
     if (step.name === config.session.reflect_step) {
-      const { impression: noticed } = outcome.value as Reflection;
+      const { impression: noticed, correction } = outcome.value as Reflection;
+
+      // Reaches `restate` through the `request_correction` block. Sealed output
+      // is immutable, so this never rewrites the previous session's
+      // `request.md` — it is a new reading that supersedes it for this session.
+      requestCorrection = correction.trim();
+
       if (noticed.trim() !== "") {
         appendImpression(knowledgeDb(), identity.id, identity.displayName, noticed, {
           session: session.id,
@@ -313,18 +472,46 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
         });
         impressions = readImpressions(knowledgeDb(), identity.id).map((c) => ({ text: c.text }));
 
-        // Synthesise only once enough has accumulated to read as a pattern.
-        // Queued for the end of the session rather than here: it costs a digest
-        // call, and the fresh summary is for the *next* session to use.
+        // With maintenance sessions available this belongs in idle time: it is
+        // retrospective, it costs a digest call, and the fresh summary is for
+        // the *next* session anyway, so nobody gains by paying for it while
+        // somebody waits. Kept on the session tail when maintenance is off, so
+        // turning the feature off never silently stops synthesis.
         const total = impressionCount(knowledgeDb(), identity.id);
-        synthesiseImpression = total > 0 && total % config.session.impression_threshold === 0;
+        synthesiseImpression =
+          !config.session.maintenance.enabled &&
+          total > 0 &&
+          total % config.session.impression_threshold === 0;
+      }
+    }
+
+    // The only writer to stored knowledge outside the gatekeeper. It supersedes
+    // rather than replaces: the blocks it was built from stay on disk, so a
+    // compaction can always be checked against its evidence.
+    if (step.name === "compact" && compactionTarget) {
+      const { compacted } = outcome.value as Compaction;
+      const applied = applyCompaction(knowledgeDb(), compactionTarget.id, compacted, {
+        session: session.id,
+        step: COMPACT_STEP,
+      });
+      if (!applied) {
+        console.warn(
+          `[session ${session.id}] compaction of "${compactionTarget.topic}" produced nothing; ` +
+            `the entry was left as it was.`,
+        );
       }
     }
 
     if (step.name === "impression") {
       const { summary } = outcome.value as Impression;
       if (summary.trim() !== "") {
-        await saveIdentity(paths, { ...identity, summary: summary.trim() });
+        // The count is recorded with the summary so the next idle check can ask
+        // "how many since?" rather than "how many in total?".
+        await saveIdentity(paths, {
+          ...identity,
+          summary: summary.trim(),
+          synthesisedAt: impressionCount(knowledgeDb(), identity.id),
+        });
       }
     }
 
@@ -345,7 +532,19 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
 
     if (queue.length === 0 && !closingQueued) {
       closingQueued = true;
-      for (const name of config.session.closing_steps) queue.push({ name, topic: "" });
+      // `review` judges how well a reply served the person, so it has nothing to
+      // judge here — and it has already been caught once describing a reply that
+      // did not exist. `summarize` is computed and leaves the session directory
+      // a record of what ran, which is the whole reason to keep it.
+      for (const name of maintenance ? ["summarize"] : config.session.closing_steps) {
+        queue.push({ name, topic: "" });
+      }
+      // Only when the session was actually interrupted. Most never are, and a
+      // debrief of an uninterrupted session would be a digest call spent
+      // confirming that nothing happened.
+      if (arrivals.length > 0 && config.session.debrief_step !== "") {
+        queue.push({ name: config.session.debrief_step, topic: "" });
+      }
       if (synthesiseImpression) queue.push({ name: "impression", topic: "" });
     }
   }
@@ -354,7 +553,11 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
     db?.close();
   }
 
-  await recordLastSession(paths, message.channelId, session);
+  // Only an exchange becomes the session `reflect` reflects on. A maintenance
+  // run has no exchange in it, and letting one claim the pointer would have the
+  // next real session reflecting on a housekeeping pass — asking how the last
+  // answer landed when there was no last answer.
+  if (!maintenance) await recordLastSession(paths, channelId, session);
 
   if (replyTarget) {
     await writeParticipationTrace(session, {
@@ -377,6 +580,10 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
     completed,
     ...(budgetStop !== undefined ? { budgetStop } : {}),
     ...(supervisorVerdicts.length > 0 ? { supervisorVerdicts } : {}),
+    ...(deferred.length > 0 ? { deferred } : {}),
+    // Deferred arrivals are deliberately excluded: those are the ones that
+    // *should* get their own session.
+    ...(consumedIds.size > 0 ? { consumed: [...consumedIds] } : {}),
     ...(reply !== undefined ? { reply } : {}),
     ...(reaction !== undefined ? { reaction } : {}),
   };
@@ -590,6 +797,49 @@ async function executeComputedStep(
     value: content,
     completed: { name: step.name, topic, outputFile: step.outputFile, content, durationMs },
   };
+}
+
+/**
+ * Records a step that threw, in the session it killed.
+ *
+ * Sealed like any other output, so it is immutable and shows up beside the
+ * step's partial working file. A session that died is now diagnosable from its
+ * own directory rather than from whatever was on the operator's screen.
+ */
+async function sealFailure(
+  session: SessionHandle,
+  stepName: string,
+  topic: string,
+  cause: unknown,
+): Promise<void> {
+  const detail = cause instanceof Error ? cause.message : String(cause);
+  const stack = cause instanceof Error ? cause.stack : undefined;
+
+  try {
+    await sealStep(
+      session,
+      "failure.md",
+      [
+        "# Session failed",
+        "",
+        `**Step:** \`${stepName}\`${topic ? ` — ${topic}` : ""}`,
+        `**At:** ${new Date().toISOString()}`,
+        "",
+        "## What went wrong",
+        "",
+        detail,
+        "",
+        "## Partial output",
+        "",
+        `Whatever the step had written is in \`trace/${stepName}.partial\`. A step`,
+        "streams there as it goes, so a timeout usually leaves most of an answer.",
+        ...(stack ? ["", "## Stack", "", "```", stack, "```"] : []),
+      ].join("\n"),
+    );
+  } catch (writeFailure) {
+    // Never let the recording of a failure replace the failure itself.
+    console.error(`[session ${session.id}] could not record the failure: ${String(writeFailure)}`);
+  }
 }
 
 /**

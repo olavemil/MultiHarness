@@ -49,7 +49,10 @@ export const schedule: ModelStep<Schedule> = {
   kind: "model",
   name: "schedule",
   defaultRole: "fast",
-  contextBlocks: ["user_summary", "recent_messages", "incoming_message", "reflection"],
+  // Both the literal message and the restatement: the gap between them is the
+  // signal, and a step given only the polished version cannot see that anything
+  // was inferred.
+  contextBlocks: ["user_summary", "recent_messages", "incoming_message", "request", "reflection"],
   outputFile: "schedule.md",
   buildSchema,
 

@@ -1,0 +1,107 @@
+{
+  "step": "adjust",
+  "note": "Adjust re-schedules the remainder of a session once some work has finished, triggered when the supervisor sees an arrival that changes the shape of the task. `completed` supplies the finished step output it reads. Empty steps is the common correct answer: the failure this step exists to prevent is repeating work already done, not enabling more of it.",
+  "cases": [
+    {
+      "id": "answer-already-found",
+      "note": "Research answered it. Anything further is repetition.",
+      "history": [{ "from": "olav", "text": "what node version does this target?" }],
+      "message": { "from": "olav", "text": "harness, what node version does this target?" },
+      "completed": [
+        {
+          "name": "research",
+          "topic": "find the targeted node version",
+          "content": "# Research\n\nThe engines field pins node >=22.18, which is the minimum for native type stripping.\n\n## Still unknown\n\n_(none identified)_"
+        }
+      ],
+      "field": "steps",
+      "mode": "length",
+      "expect": 0
+    },
+    {
+      "id": "research-empty-do-not-retry",
+      "note": "Research came up empty. Running it again finds the same nothing; reply with what is known.",
+      "history": [{ "from": "olav", "text": "does sqlite-vec ship arm64 prebuilts?" }],
+      "message": { "from": "olav", "text": "harness, does sqlite-vec ship arm64 prebuilts?" },
+      "completed": [
+        {
+          "name": "research",
+          "topic": "check sqlite-vec arm64 support",
+          "content": "# Research\n\nNothing in the knowledge store, and the pages checked did not say either way.\n\n## Still unknown\n\n- Whether prebuilt arm64 binaries are published at all"
+        }
+      ],
+      "field": "steps",
+      "mode": "length",
+      "expect": 0
+    },
+    {
+      "id": "facts-gathered-now-needs-thinking",
+      "note": "The looking-up is done and the remaining difficulty is working out what it means.",
+      "history": [
+        { "from": "olav", "text": "the gatekeeper embeds every candidate, and research writes a lot of them" }
+      ],
+      "message": { "from": "olav", "text": "harness, is that going to be a problem at scale?" },
+      "completed": [
+        {
+          "name": "research",
+          "topic": "gather the embedding cost figures",
+          "content": "# Research\n\nThe embedding model is 0.6b and returns 1024 dimensions in roughly 40ms. The prefilter compares against every stored entry in JS.\n\n## Still unknown\n\n_(none identified)_"
+        }
+      ],
+      "field": "steps",
+      "mode": "includes",
+      "expect": "reason"
+    },
+    {
+      "id": "narrowed-needs-specific-lookup",
+      "note": "The follow-up asks something the finished work did not cover, and it is a fact.",
+      "history": [
+        { "from": "olav", "text": "what node version does this target?" }
+      ],
+      "message": { "from": "olav", "text": "harness, specifically what does type stripping need?" },
+      "completed": [
+        {
+          "name": "research",
+          "topic": "find the targeted node version",
+          "content": "# Research\n\nThe engines field pins node >=22.18.\n\n## Still unknown\n\n- What the minimum is for each individual feature"
+        }
+      ],
+      "field": "steps",
+      "mode": "includes",
+      "expect": "research"
+    },
+    {
+      "id": "thinking-done-reply-now",
+      "note": "Reasoning reached a conclusion. Nothing is left but to write it.",
+      "history": [{ "from": "olav", "text": "sqlite or flat files?" }],
+      "message": { "from": "olav", "text": "harness, which would you pick?" },
+      "completed": [
+        {
+          "name": "reason",
+          "topic": "weigh the two options",
+          "content": "# Thoughts\n\nFlat files are simpler but lose search. sqlite brings FTS5 and one dependency-free file.\n\n## Where this lands\n\nsqlite, because search is the whole point of the store.\n\n## Uncertainties\n\n_(none)_"
+        }
+      ],
+      "field": "steps",
+      "mode": "length",
+      "expect": 0
+    },
+    {
+      "id": "no-budget-left",
+      "note": "Whatever is missing, there is no room to go and get it.",
+      "history": [{ "from": "olav", "text": "how does the supervisor decide to abort?" }],
+      "message": { "from": "olav", "text": "harness, how does the supervisor decide to abort?" },
+      "completed": [
+        {
+          "name": "research",
+          "topic": "find how abort is decided",
+          "content": "# Research\n\nPartial: the verdict comes from a fast model, but the cancellation path was not traced.\n\n## Still unknown\n\n- How cancellation reaches a running step"
+        }
+      ],
+      "budget_remaining": "None left — answer directly with what is already available.",
+      "field": "steps",
+      "mode": "length",
+      "expect": 0
+    }
+  ]
+}

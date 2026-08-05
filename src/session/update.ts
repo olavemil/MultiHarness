@@ -17,6 +17,13 @@ import { render } from "../prompts/render.ts";
  *
  * Distinct from `react`, which shares its family and answers a different
  * question. Keeping the names apart keeps config and traces legible.
+ *
+ * A note on `defer_to_session`: the channel inbox already queues every arrival
+ * for its own session, so deferral is the *default*, not an action. The verdict
+ * therefore means only "this one is owed an answer" — it is recorded and
+ * surfaced, and does not change what the harness does with the message. It was
+ * measured at 0/3 against `continue` before the prompt drew that line, because
+ * for an unrelated message "keep doing what you are doing" is simply true.
  */
 
 export const UPDATE_VERDICTS = [

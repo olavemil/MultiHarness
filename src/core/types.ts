@@ -6,8 +6,17 @@ export interface Identity {
   displayName: string;
   /** Including @mention forms, so a message can be matched back to an identity. */
   aliases: string[];
-  /** Running summary, rewritten by `reflect` once that step lands. */
+  /** Running summary, synthesised from accumulated impressions. */
   summary: string;
+  /**
+   * How many impressions existed when `summary` was last written.
+   *
+   * Counting *new* impressions is what lets synthesis move off the reply path:
+   * the previous scheme fired on `total % threshold === 0`, which only works if
+   * the check runs exactly once per appended impression. An idle trigger fires
+   * on its own schedule and needs a marker it can compare against.
+   */
+  synthesisedAt?: number;
 }
 
 /** A message as it arrives from an adapter. */

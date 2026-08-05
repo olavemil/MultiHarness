@@ -19,6 +19,21 @@ export interface PriorSession {
   review: string;
   summary: string;
   reflection: string;
+  /**
+   * How the previous session understood what was being asked.
+   *
+   * `summary` is a timing table — steps and durations, produced without a model
+   * — so it carries no understanding at all. This is the artifact that does, and
+   * it is what lets `reflect` check a reading against how the person then
+   * reacted to it.
+   */
+  request: string;
+  /**
+   * The previous session's debrief, when it was interrupted. Usually absent —
+   * most sessions are not. Carries anything that was asked mid-session and left
+   * unanswered, which is otherwise lost the moment that session ends.
+   */
+  debrief: string;
 }
 
 const POINTER = "last_session.json";
@@ -53,8 +68,10 @@ export async function loadPriorSession(
     return undefined;
   }
 
-  const [review, summary, reflection] = await Promise.all(
-    ["review.md", "summary.md", "reflection.md"].map((file) => readIfPresent(pointer.dir, file)),
+  const [review, summary, reflection, request, debrief] = await Promise.all(
+    ["review.md", "summary.md", "reflection.md", "request.md", "debrief.md"].map((file) =>
+      readIfPresent(pointer.dir, file),
+    ),
   );
 
   return {
@@ -63,6 +80,10 @@ export async function loadPriorSession(
     review: review ?? "",
     summary: summary ?? "",
     reflection: reflection ?? "",
+    // Absent whenever the previous session declined to reply, or predates the
+    // step. Both are ordinary, so the block reads as "not recorded".
+    request: request ?? "",
+    debrief: debrief ?? "",
   };
 }
 

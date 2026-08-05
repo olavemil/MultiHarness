@@ -2,6 +2,7 @@ import { readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { runSession } from "../src/session/run.ts";
+import { maintenanceTrigger, messageTrigger } from "../src/core/trigger.ts";
 import type { Config } from "../src/config/schema.ts";
 import { ensurePaths, resolvePaths } from "../src/store/paths.ts";
 import { mockOllama, reply, type MockOllama, type MockReply } from "./helpers/mockOllama.ts";
@@ -17,9 +18,15 @@ const SCHEDULE = JSON.stringify({
 });
 const RESPONSE = JSON.stringify({ message: "Node 22 or newer." });
 const REVIEW = JSON.stringify({ assessment: "Answered directly.", quality: 4, recommendations: [] });
+const DEBRIEF = JSON.stringify({
+  assessment: "One follow-up arrived and the session folded it into the answer.",
+  unanswered: [],
+  carry_forward: "",
+});
 const REFLECTION = JSON.stringify({
   assessment: "A new question; the previous answer was not commented on.",
   signal: "no_signal",
+  correction: "",
   recommendations: [],
   impression: "",
 });
@@ -47,7 +54,7 @@ async function run(
   const result = await runSession({
     config,
     paths,
-    message,
+    trigger: messageTrigger(message),
     identity: testIdentity(),
     history: testHistory(),
     rng: () => 0,
@@ -318,7 +325,7 @@ describe("runSession", () => {
     const result = await runSession({
       config,
       paths,
-      message: testMessage(),
+      trigger: messageTrigger(testMessage()),
       identity: testIdentity(),
       history: testHistory(),
       rng: () => 0,
@@ -386,8 +393,7 @@ describe("runSession", () => {
     const RESEARCH = JSON.stringify({ findings: "Node 22.", gaps: [] });
     const ADJUSTED = JSON.stringify({
       reason: "the question changed; think rather than look further",
-      needs_fact: false,
-      needs_thought: true,
+      finished: false,
       steps: [{ step: "reason", topic: "work out the implication" }],
     });
     const THOUGHTS = JSON.stringify({ thinking: "…", conclusion: "…", uncertainties: [] });
@@ -401,6 +407,7 @@ describe("runSession", () => {
       reply(THOUGHTS),
       reply(RESPONSE),
       reply(REVIEW),
+      reply(DEBRIEF),
     ]);
     cleanups.push(cleanup, server.close);
 
@@ -416,13 +423,17 @@ describe("runSession", () => {
     const result = await runSession({
       config,
       paths,
-      message: testMessage({ text: "harness, what node version does this target?" }),
+      trigger: messageTrigger(testMessage({ text: "harness, what node version does this target?" })),
       identity: testIdentity(),
       history: testHistory(),
       rng: () => 0,
-      // Something arrived mid-session, which is what wakes the supervisor.
-      pending: () => [testMessage({ id: "m2", text: "actually, why that one?" })],
-      ...({} as Record<string, never>),
+      // Arrives while `research` is running, not before: the supervisor is
+      // asked once per arrival, at the first step boundary that sees it.
+      pending: (() => {
+        let seen = 0;
+        return () =>
+          ++seen > 2 ? [testMessage({ id: "m2", text: "actually, why that one?" })] : [];
+      })(),
     });
     warn.mockRestore();
 
@@ -437,9 +448,18 @@ describe("runSession", () => {
       "respond",
       "summarize",
       "review",
+      // Something arrived mid-session, so the session closes by looking back at
+      // how it handled that — the only feedback a supervisor verdict ever gets.
+      "debrief",
     ]);
     expect(result.supervisorVerdicts).toEqual([{ step: "research", verdict: "adjust" }]);
     expect(await read(result.session.dir, "adjust.md")).toContain("reason");
+
+    // The debrief sees what was said and what was decided about it; neither is
+    // in `recent_messages`, which was read before the message arrived.
+    const debriefPrompt = server.requests[7]?.body.messages?.[0]?.content ?? "";
+    expect(debriefPrompt).toContain("actually, why that one?");
+    expect(debriefPrompt).toContain("adjust");
   });
 
   it("numbers sessions monotonically", async () => {
@@ -466,8 +486,8 @@ describe("runSession", () => {
       history: testHistory(),
       rng: () => 0,
     };
-    const first = await runSession({ ...base, message: testMessage({ id: "a" }) });
-    const second = await runSession({ ...base, message: testMessage({ id: "b" }) });
+    const first = await runSession({ ...base, trigger: messageTrigger(testMessage({ id: "a" })) });
+    const second = await runSession({ ...base, trigger: messageTrigger(testMessage({ id: "b" })) });
 
     expect(first.session.number).toBe(1);
     expect(second.session.number).toBe(2);

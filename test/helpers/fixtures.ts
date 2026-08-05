@@ -33,10 +33,10 @@ export async function testConfig(host: string, workingDir: string): Promise<Conf
     ...config,
     working_dir: workingDir,
     // Off for the general session tests: they exercise pipeline mechanics, and
-    // an extra queued reply per case would be noise. Both have dedicated tests
-    // that turn them back on. Empty `selectable_steps` also means `plan` is
+    // an extra queued reply per case would be noise. Each has dedicated tests
+    // that turn it back on. Empty `selectable_steps` also means `schedule` is
     // skipped, since there would be nothing for it to choose.
-    session: { ...config.session, reply_target: false, selectable_steps: [] },
+    session: { ...config.session, reply_target: false, selectable_steps: [], restate_step: "" },
     ollama: { ...config.ollama, host, request_timeout_ms: 5_000 },
     roles: Object.fromEntries(
       Object.entries(config.roles).map(([name, role]) => [name, { ...role, model: `test-${name}` }]),

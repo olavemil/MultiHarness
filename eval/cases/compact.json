@@ -1,0 +1,110 @@
+{
+  "step": "compact",
+  "note": "The failure mode is losing a fact, not writing an inelegant summary — so almost every case asserts that a specific detail survived the merge. Compaction is the only thing that rewrites what the agent knows, and a dropped number is gone: the note it came from is superseded and nothing downstream will notice the absence. The store keeps the originals regardless, which is what makes the step safe to run at all, but a compaction that quietly loses something is still a compaction that has to be caught here.",
+  "cases": [
+    {
+      "id": "keeps-the-measured-figure",
+      "note": "A specific number stated once among three notes. Rounding it to 'roughly' would lose the reason it was recorded.",
+      "entry": {
+        "topic": "metal gpu memory limit",
+        "notes": [
+          { "text": "The host is a Mac with 48 GB of unified memory." },
+          { "text": "Metal caps GPU-wired memory at about 75% once you go above 36 GB, so the real ceiling is 36 GB rather than 48." },
+          { "text": "Measured 28 GB resident with three models loaded, which leaves headroom against that ceiling." }
+        ]
+      },
+      "field": "compacted",
+      "mode": "includes",
+      "expect": "36"
+    },
+    {
+      "id": "keeps-the-second-figure-too",
+      "note": "Same entry, different detail. Two cases rather than one because a merge that keeps the headline number and drops the measurement still reads as complete.",
+      "entry": {
+        "topic": "metal gpu memory limit",
+        "notes": [
+          { "text": "The host is a Mac with 48 GB of unified memory." },
+          { "text": "Metal caps GPU-wired memory at about 75% once you go above 36 GB, so the real ceiling is 36 GB rather than 48." },
+          { "text": "Measured 28 GB resident with three models loaded, which leaves headroom against that ceiling." }
+        ]
+      },
+      "field": "compacted",
+      "mode": "includes",
+      "expect": "28"
+    },
+    {
+      "id": "keeps-a-version-string",
+      "note": "Versions and tags are exactly what a tidy-up is tempted to generalise away.",
+      "entry": {
+        "topic": "node runtime requirements",
+        "notes": [
+          { "text": "The daemon runs under Node's native type stripping, so no build step is needed." },
+          { "text": "That requires Node 22.18 or newer; earlier 22.x releases do not have it." },
+          { "text": "Relative imports have to carry the .ts extension under type stripping." }
+        ]
+      },
+      "field": "compacted",
+      "mode": "includes",
+      "expect": "22.18"
+    },
+    {
+      "id": "keeps-the-later-correction",
+      "note": "A later note corrects an earlier one. The correction is what should survive — silently keeping the superseded figure would leave the store asserting something known to be wrong.",
+      "entry": {
+        "topic": "react step timeout",
+        "notes": [
+          { "text": "The react step is given a 10 second timeout." },
+          { "text": "10 seconds turned out to be too tight — phi4 stalls occasionally and was tripping it." },
+          { "text": "Correction: the react timeout was raised to 30 seconds and has been stable since." }
+        ]
+      },
+      "field": "compacted",
+      "mode": "includes",
+      "expect": "30"
+    },
+    {
+      "id": "reports-a-genuine-contradiction",
+      "note": "Two notes disagree and nothing settles which is right. Picking one silently is how a store starts asserting something nobody established; recording both is the honest merge.",
+      "entry": {
+        "topic": "embedding model choice",
+        "notes": [
+          { "text": "qwen3-embedding:0.6b is the right size here — under a gigabyte resident." },
+          { "text": "Retrieval quality with the 0.6b is fine for the gatekeeper prefilter." },
+          { "text": "Retrieval quality with the 0.6b is noticeably worse than the 4b; the prefilter misses near-duplicates." }
+        ]
+      },
+      "field": "compacted",
+      "mode": "includes",
+      "expect": "4b"
+    },
+    {
+      "id": "produces-something",
+      "note": "An empty compaction is refused in code, because superseding several real notes with nothing is the one outcome that genuinely loses an entry. This asserts the model does not produce one in the first place.",
+      "entry": {
+        "topic": "slack socket mode",
+        "notes": [
+          { "text": "Socket Mode needs no public URL, which suits a daemon on a laptop." },
+          { "text": "It needs an app-level token starting xapp- alongside the bot token." },
+          { "text": "Bolt is imported lazily so the CLI path does not load its dependency tree." }
+        ]
+      },
+      "field": "compacted",
+      "mode": "nonempty"
+    },
+    {
+      "id": "keeps-all-three-subjects",
+      "note": "Three notes about the same topic that share no facts at all. Nothing to merge here — the correct output keeps all three, and a merge that shortens it has dropped something.",
+      "entry": {
+        "topic": "slack socket mode",
+        "notes": [
+          { "text": "Socket Mode needs no public URL, which suits a daemon on a laptop." },
+          { "text": "It needs an app-level token starting xapp- alongside the bot token." },
+          { "text": "Bolt is imported lazily so the CLI path does not load its dependency tree." }
+        ]
+      },
+      "field": "compacted",
+      "mode": "includes",
+      "expect": "xapp-"
+    }
+  ]
+}

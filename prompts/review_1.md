@@ -6,6 +6,10 @@ future sessions in this channel.
 
 ${incoming_message}
 
+## How the session restated that message before working on it
+
+${request}
+
 ## What the session produced
 
 ${prior_step_output}
@@ -23,6 +27,11 @@ do not describe a reply that does not exist.
 
 When a reply was sent: how well it answered the message — relevance, correctness, and tone, in
 that order.
+
+**Whether the restatement was faithful.** The session worked from it rather than from the words
+above, so a restatement that added something nobody asked for, or dropped a limit somebody
+stated, sent every later step after the wrong thing. Compare the two: they are both here for
+exactly this reason, and nothing else in the session ever checks one against the other.
 
 Whether the time spent was proportionate. A pipeline that ran extra steps to produce an answer
 that needed none was worse than a fast direct reply, even if the answer was slightly better.

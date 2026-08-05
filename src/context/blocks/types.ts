@@ -4,7 +4,11 @@ import type { KeepEnd } from "../budget.ts";
 
 /** Everything a context block is allowed to see. */
 export interface BlockInput {
-  message: InboundMessage;
+  /**
+   * Absent on a session no message triggered — a scheduled or idle run. Blocks
+   * that need one say so rather than assuming it is there.
+   */
+  message?: InboundMessage | undefined;
   /** Channel history, oldest first, excluding `message` itself. */
   history: readonly ChannelMessage[];
   identity: Identity;
@@ -14,6 +18,24 @@ export interface BlockInput {
   prior?: PriorSession | undefined;
   /** Accumulated impressions of `identity`, oldest first. */
   impressions?: readonly { text: string }[] | undefined;
+  /**
+   * `reflect`'s finding that the previous session misread what was asked, when
+   * it found one. Passed as data rather than parsed back out of the sealed
+   * markdown, the same way `impressions` is.
+   */
+  requestCorrection?: string | undefined;
+  /**
+   * Messages that arrived after the session began, with the supervisor's verdict
+   * on each. Absent unless something interrupted the session.
+   */
+  arrivals?: readonly { author: string; text: string; verdict: string }[] | undefined;
+  /**
+   * The knowledge entry a maintenance session is compacting. Present only in a
+   * session that selected one, which is the only session `compact` ever runs in.
+   */
+  compactionTarget?:
+    | { topic: string; blocks: readonly { text: string; session: string; step: string; at: string }[] }
+    | undefined;
 }
 
 /**

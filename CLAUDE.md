@@ -8,10 +8,11 @@ Not a chat wrapper: an incoming message triggers a **session**, which runs a con
 It is the source of truth for intent; this file is the source of truth for conventions;
 [roadmap.md](roadmap.md) is what is left to build and in what order.
 
-Status: the session loop is closed. `reflect → react → respond → summarize → review` runs end
-to end over a CLI adapter, leaving a full session directory, and each session reads the previous
-one in the same channel. The knowledge store, the expensive steps, tools, the supervisor loop,
-and the web UI are not built yet — see "Not built yet".
+Status: the session loop is closed. `reflect → react → restate → schedule → [research | reason |
+draft] → respond → summarize → review` runs end to end over CLI and Slack adapters, leaving a
+full session directory, and each session reads the previous one in the same channel. The
+knowledge store, tools, identities, and the supervisor loop are built. Cross-session planning,
+scheduled triggers, and the web UI are not — see [roadmap.md](roadmap.md).
 
 ## Runtime and process model
 
@@ -49,6 +50,10 @@ Use these terms consistently in code, config, and docs. Don't invent synonyms.
 - **identity** — a distinct communication partner. May be human or machine; the agent
   doesn't need to know which. Has aliases (including @mention forms) and a running summary.
 - **session** — one run of the pipeline, triggered by a message, schedule, or other event.
+- **trigger** — why a session is running: `message` or `maintenance`. Carries the `channelId`,
+  which is the universal anchor; the message is optional and absent on an idle run.
+- **maintenance session** — a session with no incoming message, run when a channel has gone
+  quiet. The sleep phase. Never replies.
 - **step** — one unit of work in a session (`reflect`, `react`, `research`, `respond`, …).
   Steps have a prompt file, a context spec, a model role, a tool allowlist, and an output file.
 - **schedule** — choosing which steps run in *this* session. A `fast` call, sealed to
@@ -56,6 +61,9 @@ Use these terms consistently in code, config, and docs. Don't invent synonyms.
 - **plan** — the durable, cross-session planning document, revised as `plan_N.md`. Not yet
   built. Never use "plan" for in-session step selection: they are different lifetimes, and the
   filenames collide.
+- **request** — the incoming message restated as a self-contained statement of the task, sealed
+  to `request.md` by the `restate` step. Additive: the literal message stays available
+  everywhere, and the gap between the two is what makes interpretation drift visible.
 - **model role** — `fast` / `reasoning` / `digest` / `embed`. Steps name roles; one table
   binds roles to concrete models.
 - **update** — the in-flight supervisor check that runs alongside a step. Distinct from
@@ -202,7 +210,15 @@ already-advanced step safe to apply. `abort` and `respond_now` cancel the step t
 `AbortSignal`; the partial working file survives, which is the reason steps stream to one.
 Falling back to `continue` on a parse failure is deliberate — work underway has been paid for.
 
-The daemon supplies `pending()`, because a session cannot see its own queue.
+The daemon supplies `pending()`, because a session cannot see its own queue. **Each arrival is
+judged once**, not at every step boundary — without that, one message in a seven-step session
+produced seven `fast` calls all reaching the same verdict.
+
+**`adjust` re-schedules the rest of the session**, in light of what has finished: "after this
+round of research, is anything else needed before replying?" It shares `schedule`'s schema
+because it is the same question at a later moment, and it revises *session scheduling* only —
+the durable planning document is a different lifetime and a different step. Once per session:
+repeated re-planning is its own failure mode, and sealed output is written once by design.
 
 A step runs as an iterating tool loop. Alongside it:
 
@@ -301,9 +317,30 @@ npm run eval -- --variant react_2             # pin a variant; random sampling
                                               # makes a comparison meaningless
 ```
 
+`--model` swaps the model bound to `fast` and nothing else, so it cannot answer "would this step
+be better on a bigger role?". Point `$MULTIHARNESS_CONFIG` at a file overriding `[steps.<name>]
+role` for that — a two-line TOML, and the same layering a real instance uses.
+
+`test/prompts.test.ts` assembles every variant of every registered step through
+`prepareModelStep`. `render` throws on an unsupplied variable, so a template that grows a
+`${block}` its step does not declare would otherwise fail only when that step next runs — on a
+path no test necessarily covers.
+
 Suites live in `eval/cases/<step>.json`. `reflect` cases carry the previous session's sealed
 output as `prior`, and `expectNoRecommendations` asserts the step invented no course-correction
 — the failure that compounds, since the next session reads whatever it wrote.
+
+**update, phi4, n=3, 6 cases: 4 pass · 1 unstable · 1 fail.** The failure is a design finding
+rather than a prompt one. `defer_to_session` scores 0/3 across two prompt revisions, and the
+model's reasoning is right each time: "unrelated to the current task" — so `continue`. The
+verdict describes no distinct action, because **the channel inbox already queues every arrival
+for its own session**. Deferral is the default, not a choice. It is implemented as recording
+only, and reducing the verdict set to four would probably classify better — fewer options is
+the lesson from every classification step here.
+
+`answered-by-someone-else` sits at 2/3: when a bystander supplies the answer mid-research, the
+model sometimes reads that as useful input rather than as grounds to stop. Arguably defensible,
+and left as a known flake rather than tuned.
 
 **reflect, phi4-era baseline (qwen3.6:27b via `digest`), n=3: 7/7, no invented
 recommendations.** Slow, though: 5–10s per call, the largest single cost in a session.
@@ -405,6 +442,134 @@ history, not about reply targets. Collapsing "replies to nothing" onto `absent` 
 `other_absent` open with "you have not spoken in this conversation" in a thread the agent had
 taken part in. Presence stays a question about history.
 
+## The restated request
+
+`steps/restate.ts`, sealed to `request.md` and read downstream through the `request` block.
+
+**The gap it fills.** Several steps received `incoming_message` as their whole statement of the
+task, and "could you draft a plan for this?" hands them a pronoun with no referent.
+`recent_messages` was present but it is a transcript, not a brief — every step inferred the task
+from it separately and differently.
+
+**A step, not a session-level call**, despite being the same shape as `reply_target`. Its output
+is consumed by later steps, so it wants sealing, budget accounting, and per-step config — and
+above all the generic eval runner. A bespoke path would have been the fifth instance of
+eval/live drift.
+
+**Additive, never replacing.** `incoming_message` stays available everywhere. `respond` and
+`review` get both deliberately: the gap between the literal message and the restatement is the
+only thing that makes interpretation drift visible, and a step handed only the polished version
+cannot see that anything was inferred. `restate` is excluded from `prior_step_output` for the
+same reason `react` is — it is framing, not work product, and every step reading that block also
+declares `request`.
+
+**Queued after `react` decides to reply, and only with history.** That keeps it off the
+declining path, which is the common one, and a first message in a channel is already
+self-contained.
+
+**`resolved: false` is a reason to ask, not to research.** `schedule` reads it as a terminal
+no-steps gate and `respond` asks about exactly the open points. Confidently researching the
+wrong interpretation is the expensive failure: it burns a session and reads as authoritative
+while answering the wrong question.
+
+### Carrying a reading across sessions, and correcting it
+
+`restate` also reads two blocks the transcript cannot supply: `prior_request`, the previous
+session's `request.md`, and `request_correction`, `reflect`'s finding that the previous session
+answered the wrong question.
+
+**`last_session_summary` is not prior understanding, despite the name.** `summarize` is a
+computed step emitting a table of steps and durations; it records what ran, never what it was
+taken to mean. `prior_request` is the block that carries a reading forward, which is why
+`PriorSession` now loads `request.md` alongside review, summary, and reflection.
+
+**A correction is a new artifact, never a rewrite.** Sealed output is immutable, so nothing
+edits the previous `request.md`. `reflect` emits a `correction` field, the harness passes it
+through `BlockInput` the same way it passes `impressions`, and this session's `restate` reads
+it — superseding the old reading rather than altering it.
+
+**`reflect` owns it because it is the only step that sees the reaction.** A misread question
+produces the most legible signal in the system: the person says "no, I meant the other one".
+That is far easier to detect than the vague "did that answer land" judgement reflect otherwise
+makes — and it is the recovery path for the one failure below that neither prompt nor model
+fixed.
+
+**Measured, and it works.** `correction-overrides-transcript`, `correction-settles-it`, and
+`prior-reading-does-not-leak` are **3/3 each**. Detecting the ambiguity up front sits at 0/3;
+acting on the person's correction afterwards is reliable. The third case is the one that had to
+pass for carrying anything forward to be safe at all: a new question on a new subject must not
+inherit the previous session's subject merely because it is in the prompt.
+
+**The distinction it has to hold: dissatisfaction is not a misreading.** An answer can be too
+long, or wrong, while the question was understood perfectly. Treating that as a misread reading
+would send the next session after a different question than the one asked.
+
+An invented correction is worse than an invented critique — the session's whole understanding of
+the question is built from it — so the prompt leads with "usually it was not misread", the
+fallback is empty, and three of the five cases assert emptiness.
+
+**reflect, n=3, 12 cases: 12 pass · 0 unstable · 0 fail**, ~10s. All five correction cases pass,
+including `dissatisfied-but-understood` — the answer was too long, the question was understood,
+and the correction stays empty.
+
+This is the first field here to measure clean on its first run, and it is not luck: the "lead
+with the affirmative, make it terminal, keep the empty answer easy" pattern was applied from the
+start, having been paid for by `recommendations` and `no_signal` on the same step. The lesson
+generalises — a new field on a step whose failure modes are already understood can inherit the
+fix instead of rediscovering it.
+
+### Measured: constraints carry; ambiguity does not register
+
+phi4, n=3, 13 cases: **9 pass · 2 unstable · 2 fail**, ~4s. (Before the two carried-forward
+blocks were added, 10 cases: 7 pass · 2 unstable · 1 fail.)
+
+**Adding the blocks did not help the ambiguity cases, and may have cost a little elsewhere.**
+`unresolved-two-candidates` went 1/3 → 0/3 and `carries-no-dependencies` 3/3 → 2/3. The first is
+noise around a case that never worked; the second is a new wobble on the half that was solid, and
+it is exactly the cost predicted for a fifth block on phi4 at 8k. Neither is established at n=3
+— re-measure at n=5 before treating it as real, and before adding a sixth block for the rolling
+digest.
+
+What works is the half that mattered most. Every `carries-` case is 3/3 — a constraint stated
+once, early, by somebody other than the last speaker survives into the restatement. A
+restatement that quietly drops one is worse than none, because it reads as complete.
+
+**The failure is that ambiguity is resolved by conjunction.** Given two candidate referents the
+model does not report two candidates; it writes *"the migration RFC **and** the incident
+writeup"* and marks the request settled. Consistent across every failing run, and a coherent
+policy — just not the one asked for.
+
+**Field order moved it and did not fix it.** Decoding `request` first put the model in the
+position of judging a fluent paragraph it had just written — the same self-assessment failure as
+`reflect` inventing critique and `review` describing a reply that did not exist. Deciding
+settledness *before* any restatement exists took `unresolved-two-candidates` from 0/3 to 1/3.
+Real movement, not a fix. Two levers are spent; **do not try a third prompt rewrite** — the
+remaining candidate is the role.
+
+**A bigger model does not fix it, so keep `fast`.** Re-run on `digest` (qwen3.6:27b, thinking
+off) via a `$MULTIHARNESS_CONFIG` override: **6 pass · 2 unstable · 2 fail** at 7–10s per call
+against phi4's 3–4s. The two ambiguous cases went 1/3 and 1/3 — the same place phi4 landed. A
+failure that survives a 3× larger model is not a capability gap, which points back at the schema
+or the framing rather than at the role.
+
+**That run also demonstrated the sleep hazard, which is how the hazard was confirmed.** The last
+two cases errored on **all six attempts** with 120s timeouts carrying only 250–350 characters,
+after eight cases had completed normally. The machine had suspended. `AbortSignal.timeout`
+counts wallclock, so every in-flight call died on resume reporting that qwen3.6:27b had exceeded
+its deadline — a message that sends you to look at ollama, where nothing is wrong. The same
+suspension turned a 543ms `npm test` into 986s.
+
+**Read this signature before believing a timeout:** consecutive total failures, partial content
+in hand, and a wallclock figure that does not match the work done. Those two cases are
+unmeasured rather than failed, so the digest numbers are a partial comparison, not a baseline.
+The conclusion survives because the cases it rests on — the two ambiguous ones — both completed.
+
+**One eval expectation was wrong and was corrected rather than tuned against.** A term the
+participants share and the assistant does not is *not* an open point: they know what "tier-2"
+means, and asking would be pedantry. `resolved-shared-jargon` now asserts `true` and encodes the
+distinction the prompt has to hold — unfamiliar is not ambiguous. Following the gatekeeper
+precedent: debatable calls get corrected, not encoded as truth.
+
 ## Weighted participation
 
 `core/participation.ts`. Damps the agent's tendency to dominate a channel — a failure no
@@ -433,6 +598,11 @@ skips it rather than reflecting on nothing.
 about the previous answer; neither does `thanks`. Every recommendation `reflect` writes is acted
 on by the very next step *and* read by the following session, so a fabricated critique
 compounds. The prompt leads with that, and the fallback claims no signal for the same reason.
+
+It also decides whether the previous session **understood the question**, which is a different
+judgement from whether it answered well, and emits a `correction` when it did not. See "Carrying
+a reading across sessions" above — that field feeds `restate`, so an invented one is more
+damaging than an invented recommendation.
 
 Costs ~11s on `digest` — the largest single addition to a session so far.
 
@@ -548,6 +718,7 @@ a prompt, which makes it a prompt-injection surface, and it wants deciding on pu
 |---|---|---|---|
 | `reflect` | digest | — | second session onward in a channel |
 | `react` | fast | — | unless the agent was named |
+| `restate` | fast | — | replying, and the channel has history |
 | `schedule` | fast | — | replying, and `selectable_steps` is non-empty |
 | `research` | reasoning | knowledge search/read/write | chosen by `schedule` |
 | `reason` | reasoning | none | chosen by `schedule` |
@@ -555,6 +726,8 @@ a prompt, which makes it a prompt-injection surface, and it wants deciding on pu
 | `respond` | reasoning | — | replying |
 | `summarize` | — | — | always |
 | `review` | digest | — | always |
+| `debrief` | digest | — | only when messages arrived mid-session |
+| `impression` | digest | — | every N impressions, in a maintenance session |
 
 `schedule` picks from them. `reason` deliberately has no tools: it exists to think, and a tool loop would turn it back into
 research. `draft` writes a first pass with notes for `respond` to sharpen.
@@ -623,6 +796,229 @@ behaviour: what the person wants from an answer, and **whether effort is appreci
 who never engages with careful work is asking for a fast answer, which is useful rather than a
 complaint.
 
+## Three reflection loops, deliberately separate
+
+Easy to conflate, and they answer different questions on different clocks. Nothing here should
+be merged into anything else here.
+
+| loop | subject | scope | lifetime |
+|---|---|---|---|
+| `reflect` | how the last exchange landed | per channel | read by the next session, then superseded |
+| `debrief` | how an interruption was handled | per session | only when the session was interrupted |
+| `review` | how well the reply served the person | per session | read by the next `reflect` |
+| impressions → `impression` | the other person | **cross-channel**, per identity | permanent, revised every N |
+| personality insert (4c, unbuilt) | the agent itself | **cross-channel** | permanent, rarely revised |
+
+**The bottom two are the only cross-channel loops, and that is the interesting property.**
+Everything else is scoped to a channel and effectively forgotten within a session or two. An
+identity's impressions accumulate wherever that person talks, and their synthesis is what every
+step reads through `user_summary` — so it is the one place where something learned in one channel
+changes behaviour in another. It is a persistent, dynamic, cross-channel reflection process that
+was not designed as one; it emerged from making impressions per-identity rather than per-channel.
+
+That is the argument for the personality insert being the same shape applied to the agent
+itself, and for it inheriting the same guards: append-only revisions, and a strong default of
+leaving it alone. It is also why both need measuring more than the per-channel loops do — a
+mistake in a channel-scoped loop expires, and a mistake in a cross-channel one does not.
+
+## Debrief — the only feedback a supervisor verdict gets
+
+`steps/debrief.ts`, sealed to `debrief.md`, queued as a closing step **only when something
+arrived while the session was working**. Most sessions never run it.
+
+**Two jobs, and the first is the reason it exists.** A message can arrive mid-session, be judged
+once by the supervisor, and then be lost: the session was already committed to another task, it
+finished that task, and it stopped. `abort` and `respond_now` make that likely and `continue`
+makes it silent — and nothing else in the system would ever notice. `unanswered` is that check.
+Arrivals are recorded **whatever the verdict**, including `continue`, precisely because those are
+the ones most likely to vanish.
+
+The second job: whether cutting the session short was right. `update` issues verdicts and
+`adjust` applies them, and until now nothing ever looked back at one. That blind spot is part of
+why `defer_to_session` sat at 0/3 across two prompt revisions before the cause was understood.
+
+**It reaches the next session** through `PriorSession.debrief` and the `last_debrief` block,
+which `reflect` reads. Without that it would be write-only: the question it identifies exists in
+no other artifact once the session that absorbed it ends.
+
+**Written in analyst voice about a third party's session** — the treatment CLAUDE.md has flagged
+`review` as needing and never received. The prompt says the work is somebody else's and to read
+it as material to examine. A step asked "did *you* miss anything?" answers no.
+
+**Measured: 8/8, n=3, 0 unstable**, ~6.6s on `digest`. Both directions hold — it reports the
+owed question and names it (`staging`), and it stays empty for a remark between two other people,
+a thank-you, an arrival the reply already covered, and an abort that was the right call.
+
+Second suite in a row to pass clean on its first run, after `reflect`'s `correction` field. The
+tempting read is that the prompt discipline has matured; the more likely one is that **both are
+`digest` steps making a retrospective judgement against clear criteria**, which is the shape that
+has always worked here. The two open failures are both `fast` steps asked to *discriminate
+between options* — `schedule` choosing a step, `restate` detecting ambiguity. That is the harder
+job, not the worse prompt.
+
+Untested on `fast`. If a closing digest call proves too slow, moving it is a role-table change —
+and would need re-measuring, because the shape above is exactly what might not survive it.
+
+## Knowledge compaction
+
+`knowledge/compaction.ts` and the `compact` step. Merges one entry's accumulated notes into a
+single coherent statement, in a maintenance session, never on the reply path.
+
+**Nothing is deleted.** A compaction appends a new block and sets `superseded_by` on the blocks
+it was built from. `readContents` returns live blocks, so compaction takes effect by existing;
+`readAllContents` still returns the originals. That is what resolves the conflict the roadmap
+flagged — compaction rewriting entries versus content being append-only. A summary can always be
+checked against its evidence, and append-only survives intact.
+
+**Strict on all four axes**, deliberately:
+
+- **Three or more live blocks** to qualify. Two notes are not a pile.
+- **One entry per session**, the most-appended. This is the first thing that rewrites what the
+  agent knows, so a bad pass touches one topic and a backlog clears over several quiet periods
+  rather than in one burst of digest calls.
+- **Within an entry only.** Never across entries: topic and namespace are the immutable key, and
+  merging two entries means choosing which key survives. Two subjects sharing vocabulary are not
+  one subject — the same call the gatekeeper suite deliberately declines to make.
+- **`knowledge` namespace only.** Identity impressions have their own synthesis step.
+
+**The threshold counts notes, not blocks**, and that distinction is load-bearing. A compacted
+entry has one live block; counting blocks let two new notes re-qualify it, because the earlier
+compaction made up the third — the threshold quietly halving on every pass after the first.
+Compaction blocks are excluded from the tally by their provenance step, so "three separate
+writes" keeps meaning three writes. Superseded notes are excluded too, which is what stops every
+sweep re-compacting the same entry forever.
+
+That bug shipped **with a test asserting it**, comment and all, because the mechanic was observed
+and written down as the expectation instead of being checked against the requirement. The same
+failure as the gatekeeper case that had to be corrected rather than tuned against: a test written
+from the code confirms the code.
+
+**Recompaction currently merges the previous compaction rather than the notes behind it** — a
+summary of a summary, which is the compounding shape this project has been bitten by three times.
+Roadmap 1c-ter has the fix and the tension it carries (rebuilding from originals means unbounded
+input). Nothing has been through a second compaction yet, so it is written down rather than
+built.
+
+`applyCompaction` refuses an empty result and does both writes in one transaction. Superseding
+several real notes with nothing is the single outcome that genuinely loses an entry; everything
+else is recoverable by reading the originals.
+
+**The prompt asks for completeness over brevity**, because the failure mode is losing a fact, not
+writing an inelegant paragraph. It also asks for contradictions to be reported rather than
+resolved: silently picking between two notes that disagree is how a store starts asserting
+something nobody established.
+
+**Measured: 7/7, n=3, 0 unstable** — but read what the suite actually proves. Every case asserts
+a specific token survived the merge: a measured figure (`36`, `28`), a version (`22.18`), the
+later of two conflicting timeouts (`30`), the losing side of a genuine disagreement (`4b`), and a
+fact that shares nothing with its neighbours (`xapp-`). So it proves **those** facts survive, not
+that *no* fact was lost — a compaction that quietly dropped something no case names would pass.
+That is the limit of a token-matching suite on a free-text output, and the reason the originals
+being retained is the real safeguard rather than the eval.
+
+**~13s per call**, several times any other step. Long inputs on the 27B, and it runs in a
+maintenance session where nobody is waiting — which is exactly the argument for putting it there.
+Real entries will carry more notes than these three-note cases, so expect worse.
+
+## Maintenance sessions — the sleep phase
+
+`core/trigger.ts`, `session/maintenance.ts`, `[session.maintenance]`. A session with no incoming
+message, run when a channel has gone quiet. Off by default.
+
+**`channelId` is the universal anchor, not `message`.** That is the whole design. Per-channel
+history, reflection, and the last-session pointer are what a session hangs off; a message is one
+way of arriving at a channel. Making the trigger explicit is what let a session run without one,
+and `BlockInput.message` became optional as a direct consequence — `incoming_message` now says
+"nothing was said" rather than rendering empty, which a model reads as a message that said
+nothing.
+
+**No entry step, no reply, no `review`.** There is no decision about whether to answer, so
+`react` is skipped entirely and the queue comes from config. `respond` is filtered out **in
+code** whatever `steps` says: nobody is waiting, and speaking unprompted into a quiet channel is
+the agent talking to itself. `review` is skipped because it judges how well a reply served
+somebody, and it has already been caught once describing a reply that did not exist. `summarize`
+stays — it is computed, and it leaves the session directory a record.
+
+**A maintenance session never becomes the prior session.** `recordLastSession` is skipped, or
+the next real session's `reflect` would ask how the last answer landed when there was no answer
+and no exchange.
+
+**It fires only when there is work.** `pendingMaintenance` answers "is there anything to do here,
+and what?" before a trigger is created, and its answer becomes the trigger's reason and every
+step's topic — so no session can appear in `sessions/` unexplained. A maintenance session with
+nothing in it opens a directory, spends a digest call, and summarises having done nothing.
+
+**Impression synthesis is the first tenant**, and the reason the item was worth building. It was
+queued at the end of every session, where the roadmap noted it had no business being: it is
+retrospective, it costs a `digest` call, and the summary it writes is for the *next* session
+anyway. Moving it off the reply path costs nobody anything.
+
+That move needed a new marker. The old scheme fired on `total % threshold === 0`, which only
+works if the check runs exactly once per appended impression; an idle trigger fires on its own
+schedule, so `Identity.synthesisedAt` records the count at the last synthesis and the gate asks
+how many are *new*. With maintenance disabled, synthesis stays on the session tail — turning the
+feature off must not silently stop it.
+
+### Two bugs this surfaced, both about empty queues
+
+The closing steps are appended from *inside* the step loop. So a session whose queue starts
+empty ran nothing and sealed nothing — a session directory indistinguishable from one that never
+ran. Reachable as soon as every configured maintenance step could be refused. There is now an
+explicit guard before the loop.
+
+The first attempt refused `respond` at dispatch with `continue`, which skipped the closing block
+at the loop's foot and produced the same empty directory. **Filtering the queue at construction
+is the right place**: one decision, no branch in the hot loop, and the closing steps still run.
+
+### The idle sweep
+
+`daemon.ts`. A timer checks each channel for quiet plus pending work, and **joins that channel's
+own drain** rather than running beside it. Per-channel history and the identity record assume a
+single writer, so an idle run writing an identity summary while a session read it would be the
+exact race the per-channel actor exists to prevent. The timer is `unref`'d, so a pending sweep
+never holds the process open.
+
+## Surviving what goes wrong
+
+Four faults from one real session (`galatea/000007`), all now closed.
+
+**Timeouts do not count time the machine was asleep.** `model/deadline.ts` replaces
+`AbortSignal.timeout` with a ticking watchdog: a tick that arrives more than 5× late means the
+process was not running, so that time is recorded as suspension rather than charged to the model.
+Detection is a late tick because Node offers no portable "did we suspend" signal — and the late
+tick is evidence of the thing that actually matters, time during which no progress was possible.
+Sustained heavy load has the same signature and is treated the same way on purpose: in neither
+case was the wallclock time the model failing to answer. The error message now names the
+suspension instead of reporting that qwen3.6:27b blew its deadline.
+
+This cost a real measurement before it was understood — a `restate` eval had its last two cases
+error on all six attempts and the result was written up as run degradation.
+
+**A timed-out step's partial output is salvaged.** `OllamaTimeout` carries what had streamed, and
+`call.ts` tries to parse it, closing brackets and strings the model had not reached. A 27B with
+thinking on routinely produces a complete object bar its closing brace; discarding ten minutes of
+work over one character is the worst available outcome. **Salvage only ever adds closing
+delimiters** — it never invents a field or repairs a truncated value, so anything it returns is
+output the model actually produced. A partial missing a required field is discarded, and the
+trace records `salvagedFromTimeout`.
+
+**A failed step records why, in the session.** `failure.md` is sealed with the step, the cause,
+the stack, and a pointer to the partial working file. Previously a dead session left a partial
+with no `meta.json` and the reason existed only in the daemon's console — which is why the cause
+of 000007 had to be supplied by hand. In a system whose first rule is trace everything, the
+failure path was the one thing untraced.
+
+**A message that arrives mid-session does not start a second one.** `runSession` reports
+`consumed`, and the daemon drops those ids from the channel inbox instead of draining them into
+sessions of their own. 000006 was running when a follow-up opened 000007: two sessions for one
+exchange, the second reasoning about the message with no idea the first was still working.
+
+**This is what finally gives `defer_to_session` a distinct action.** It measured 0/3 against
+`continue` across two prompt revisions, correctly — in that build the two did the same thing,
+because every arrival got its own session regardless. Now consumption is the default and deferral
+is the exception that keeps one queued. The verdict is worth re-measuring; the case for removing
+it has gone.
+
 ## Session budget
 
 `session/budget.ts`. Wallclock alone was never a bound — it is checked between steps, so one
@@ -641,14 +1037,19 @@ of latency after the answer was already written, for retrospection nobody is wai
 
 ## Not built yet
 
-See [roadmap.md](roadmap.md). The headline gap: sessions run one at a time **globally**, so a
-message in one channel waits behind a long session in another. The per-channel actor and the
-supervisor loop resolve it and are the next substantial piece.
+See [roadmap.md](roadmap.md). The headline gaps are now **cross-session planning** — a plan that
+survives sessions is what lets the agent work on something over days rather than answering each
+message in isolation — and **step survivability**: a step that exceeds its timeout loses its
+work, a sleeping laptop fails every in-flight step, and nothing in a session directory records
+why a step died.
 
 ## Open decisions
 
 Not yet settled — raise them rather than silently picking:
 
-- Knowledge store backing — leaning sqlite (FTS5 for search, `sqlite-vec` for the gatekeeper
-  prefilter, one file, one dependency), but not finally settled.
-- Session budget model (wallclock, tokens, tool calls) and what happens on exhaustion.
+- Whether `restate` earns a larger role than `fast`, and whether the restatement should supply
+  each step's `topic` instead of `schedule` inventing one separately.
+- Whether `defer_to_session` survives. It measures 0/3 because it names no distinct action; it
+  gets one only if the supervisor starts consuming arrivals instead of letting them open their
+  own sessions.
+- Whether plans are per-channel or per-goal, and which step may revise one.

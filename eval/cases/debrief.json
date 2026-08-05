@@ -1,0 +1,125 @@
+{
+  "step": "debrief",
+  "note": "`debrief` runs only when messages arrived while the session was working. Its load-bearing output is `unanswered`: a question can arrive mid-session, be noticed by the supervisor, and then be lost when the session finishes the task it was already committed to. Nothing else in the system would ever notice. The negative cases matter as much — an invented omission is read by the next session and acted on, so remarks, thanks, and things the reply already covered must come back empty.",
+  "cases": [
+    {
+      "id": "question-never-answered",
+      "note": "The clear case. A second person asks something unrelated to the running task, the session carries on and answers the original question, and nobody ever answers theirs.",
+      "message": { "from": "olav", "text": "harness, what node version does this project target?" },
+      "arrivals": [
+        {
+          "author": "kari",
+          "text": "while you're at it — has the staging box been rebooted since friday?",
+          "verdict": "continue"
+        }
+      ],
+      "completed": [
+        {
+          "name": "respond",
+          "content": "Node 22 or newer — the built-in test runner and type stripping both need it."
+        }
+      ],
+      "field": "unanswered",
+      "mode": "nonempty"
+    },
+    {
+      "id": "names-the-question-still-owed",
+      "note": "Same case, checking the entry says what is owed rather than merely that something is.",
+      "message": { "from": "olav", "text": "harness, what node version does this project target?" },
+      "arrivals": [
+        {
+          "author": "kari",
+          "text": "while you're at it — has the staging box been rebooted since friday?",
+          "verdict": "continue"
+        }
+      ],
+      "completed": [
+        {
+          "name": "respond",
+          "content": "Node 22 or newer — the built-in test runner and type stripping both need it."
+        }
+      ],
+      "field": "unanswered",
+      "mode": "includes",
+      "expect": "staging"
+    },
+    {
+      "id": "arrival-was-answered",
+      "note": "The follow-up arrived and the reply covers it. Being noticed and being answered are different things, and this is the case where they coincide.",
+      "message": { "from": "olav", "text": "harness, what node version does this project target?" },
+      "arrivals": [
+        { "author": "olav", "text": "and why that one rather than 20?", "verdict": "adjust" }
+      ],
+      "completed": [
+        {
+          "name": "respond",
+          "content": "Node 22 or newer. Rather than 20 because the built-in test runner and native type stripping both landed in 22, and the daemon relies on both."
+        }
+      ],
+      "field": "unanswered",
+      "mode": "empty"
+    },
+    {
+      "id": "remark-between-others",
+      "note": "Not addressed to the agent and not a question to it. Reporting this as owed would have the next session answer a conversation it was not part of.",
+      "message": { "from": "olav", "text": "harness, what node version does this project target?" },
+      "arrivals": [
+        { "author": "kari", "text": "erik, lunch at 12?", "verdict": "continue" },
+        { "author": "erik", "text": "works for me", "verdict": "continue" }
+      ],
+      "completed": [{ "name": "respond", "content": "Node 22 or newer." }],
+      "field": "unanswered",
+      "mode": "empty"
+    },
+    {
+      "id": "bare-acknowledgement",
+      "note": "Politeness owes nothing. The same distinction `reflect` has to hold for `no_signal`.",
+      "message": { "from": "olav", "text": "harness, what node version does this project target?" },
+      "arrivals": [{ "author": "olav", "text": "perfect, thanks", "verdict": "continue" }],
+      "completed": [{ "name": "respond", "content": "Node 22 or newer." }],
+      "field": "unanswered",
+      "mode": "empty"
+    },
+    {
+      "id": "carries-nothing-when-nothing-owed",
+      "note": "`carry_forward` is read and acted on by the next session, so an invented note is worse than none. Empty is the ordinary answer.",
+      "message": { "from": "olav", "text": "harness, what node version does this project target?" },
+      "arrivals": [{ "author": "olav", "text": "perfect, thanks", "verdict": "continue" }],
+      "completed": [{ "name": "respond", "content": "Node 22 or newer." }],
+      "field": "carry_forward",
+      "mode": "empty"
+    },
+    {
+      "id": "carries-the-owed-question-forward",
+      "note": "The other direction: something genuinely went unanswered, and the next session is the only thing that can pick it up.",
+      "message": { "from": "olav", "text": "harness, what node version does this project target?" },
+      "arrivals": [
+        {
+          "author": "kari",
+          "text": "separately, can you look at why the nightly backup keeps failing?",
+          "verdict": "continue"
+        }
+      ],
+      "completed": [{ "name": "respond", "content": "Node 22 or newer." }],
+      "field": "carry_forward",
+      "mode": "nonempty"
+    },
+    {
+      "id": "abort-for-something-urgent",
+      "note": "Cutting the session short was right here. The judgement is the only look anything ever takes at a supervisor verdict, so it has to be able to say a stop was correct as well as wrong.",
+      "message": { "from": "olav", "text": "harness, can you research our caching options?" },
+      "arrivals": [
+        {
+          "author": "olav",
+          "text": "stop — production is down, forget the caching thing",
+          "verdict": "abort"
+        }
+      ],
+      "completed": [
+        { "name": "research", "topic": "caching options", "content": "# Research\n\n_(cancelled)_" }
+      ],
+      "field": "unanswered",
+      "mode": "empty"
+    }
+  ]
+}

@@ -22,6 +22,7 @@ import path from "node:path";
 import { loadConfig } from "../src/config/load.ts";
 import type { Config } from "../src/config/schema.ts";
 import { runGatekeeperCase } from "./gatekeeper.ts";
+import { runUpdateCase } from "./update.ts";
 import {
   describeExpectation,
   matches,
@@ -91,6 +92,8 @@ async function main(): Promise<void> {
         attempts.push(
           args.step === "knowledge_gatekeeper"
             ? await runGatekeeperCase(config, testCase)
+            : args.step === "update"
+            ? await runUpdateCase(config, testCase)
             : await runStep(args.step, config, testCase, {
                 think: args.think,
                 variant: args.variant,

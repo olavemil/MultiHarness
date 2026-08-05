@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { chat, type ChatMessage } from "./ollama.ts";
+import { chat, OllamaTimeout, type ChatMessage } from "./ollama.ts";
 import type { ResolvedRole } from "./roles.ts";
 
 /**
@@ -25,6 +25,8 @@ export interface CallAttempt {
   /** Reasoning the model emitted before answering; empty when thinking is off. */
   thinking: string;
   validationError?: string;
+  /** Parsed from a partial response after the call ran out of time. */
+  salvagedFromTimeout?: boolean;
   durationMs: number;
   promptTokens: number;
   responseTokens: number;
@@ -75,7 +77,9 @@ export async function callModel<T>(req: CallRequest<T>): Promise<CallResult<T>> 
   let lastRaw = "";
 
   for (let attemptNo = 1; attemptNo <= MAX_ATTEMPTS; attemptNo++) {
-    const response = await chat(
+    let response;
+    try {
+      response = await chat(
       req.host,
       {
         model: req.role.model,
@@ -85,8 +89,35 @@ export async function callModel<T>(req: CallRequest<T>): Promise<CallResult<T>> 
         ...(req.role.keepAlive !== undefined ? { keepAlive: req.role.keepAlive } : {}),
         ...(req.role.think !== undefined ? { think: req.role.think } : {}),
       },
-      { timeoutMs: req.timeoutMs, signal: req.signal, onDelta: req.onDelta },
-    );
+        { timeoutMs: req.timeoutMs, signal: req.signal, onDelta: req.onDelta },
+      );
+    } catch (cause) {
+      // A step that ran out of time having already written most of its answer is
+      // not the same as a step that produced nothing. The partial is frequently
+      // a complete object missing its closing brace, and throwing away ten
+      // minutes of work over one character is the worst outcome available.
+      if (!(cause instanceof OllamaTimeout)) throw cause;
+      const salvaged = salvage(req.schema, cause);
+      if (salvaged === undefined) throw cause;
+
+      console.warn(
+        `[call:${req.label}] timed out, but the partial response parsed; using it. ${cause.message}`,
+      );
+      attempts.push({
+        messages: [...messages],
+        raw: cause.partialContent,
+        thinking: cause.partialThinking,
+        durationMs: req.timeoutMs,
+        promptTokens: 0,
+        responseTokens: 0,
+        salvagedFromTimeout: true,
+      });
+      return {
+        value: salvaged,
+        raw: cause.partialContent,
+        trace: buildTrace(req, attempts, started, false),
+      };
+    }
 
     lastRaw = response.content;
     const validated = validate(req.schema, response.content);
@@ -126,6 +157,49 @@ export async function callModel<T>(req: CallRequest<T>): Promise<CallResult<T>> 
     raw: lastRaw,
     trace: buildTrace(req, attempts, started, true),
   };
+}
+
+/**
+ * Tries to parse a timed-out call's partial output, closing any brackets the
+ * model had not reached yet.
+ *
+ * Only ever *adds* closing delimiters — it never invents a field or repairs a
+ * truncated string, so anything it returns is content the model actually
+ * produced. A partial that does not parse under that rule is discarded.
+ */
+function salvage<T>(schema: z.ZodType<T>, cause: OllamaTimeout): T | undefined {
+  if (!cause.timedOut) return undefined;
+  const partial = cause.partialContent.trim();
+  if (partial === "") return undefined;
+
+  const direct = validate(schema, partial);
+  if (direct.ok) return direct.value;
+
+  // Close whatever is still open, innermost first. A trailing partial key or a
+  // dangling comma will simply fail to parse, which is the intended outcome.
+  const open: string[] = [];
+  let inString = false;
+  let escaped = false;
+  for (const char of partial) {
+    if (escaped) { escaped = false; continue; }
+    if (char === "\\") { escaped = true; continue; }
+    if (char === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (char === "{" || char === "[") open.push(char);
+    else if (char === "}" || char === "]") open.pop();
+  }
+  if (open.length === 0) return undefined;
+
+  const closed =
+    partial +
+    (inString ? '"' : "") +
+    open
+      .reverse()
+      .map((c) => (c === "{" ? "}" : "]"))
+      .join("");
+
+  const repaired = validate(schema, closed);
+  return repaired.ok ? repaired.value : undefined;
 }
 
 type Validated<T> = { ok: true; value: T } | { ok: false; error: string };

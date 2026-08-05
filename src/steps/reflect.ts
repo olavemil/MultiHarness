@@ -9,6 +9,15 @@ export interface Reflection {
    * new question says nothing about the last answer.
    */
   signal: "satisfied" | "dissatisfied" | "no_signal";
+  /**
+   * What was actually being asked, when the new message shows the previous
+   * session answered the wrong reading of it. Empty otherwise, which is the
+   * common case.
+   *
+   * Sealed output is immutable, so this never rewrites the previous
+   * `request.md`; it is a new artifact that this session's `restate` reads.
+   */
+  correction: string;
   recommendations: string[];
   /**
    * What the incoming message showed about the person, if anything. Appended to
@@ -18,10 +27,14 @@ export interface Reflection {
   impression: string;
 }
 
-// Reasoning before the verdict it justifies.
+// Reasoning before the verdict it justifies. `correction` decodes after
+// `signal` so the model has already committed to whether the message reacts to
+// the last answer at all — a correction under `no_signal` is a contradiction it
+// can see rather than one it has to be told about afterwards.
 const schema = z.object({
   assessment: z.string(),
   signal: z.enum(["satisfied", "dissatisfied", "no_signal"]),
+  correction: z.string(),
   recommendations: z.array(z.string()),
   impression: z.string(),
 }) as z.ZodType<Reflection>;
@@ -42,9 +55,11 @@ export const reflect: ModelStep<Reflection> = {
     "user_summary",
     "recent_messages",
     "incoming_message",
+    "prior_request",
     "last_review",
     "last_session_summary",
     "last_reflection",
+    "last_debrief",
   ],
   outputFile: "reflection.md",
   buildSchema: () => schema,
@@ -56,6 +71,7 @@ export const reflect: ModelStep<Reflection> = {
   fallback: () => ({
     assessment: "Reflection could not be parsed; treating the previous session as unjudged.",
     signal: "no_signal",
+    correction: "",
     recommendations: [],
     impression: "",
   }),
@@ -72,6 +88,10 @@ export const reflect: ModelStep<Reflection> = {
       `**Signal from the last exchange:** ${r.signal.replace("_", " ")}`,
       "",
       r.assessment,
+      "",
+      "## What was actually being asked",
+      "",
+      r.correction.trim() || "_(the previous reading was not challenged)_",
       "",
       "## Do this session",
       "",

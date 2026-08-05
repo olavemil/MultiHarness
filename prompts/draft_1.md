@@ -17,6 +17,13 @@ ${recent_messages}
 
 ${incoming_message}
 
+## What is being asked, stated in full
+
+${request}
+
+Answer the message as written; this is here so you can see what it refers back to and what
+limits an acceptable answer. Never quote it back or mention that it exists.
+
 ## What earlier steps produced
 
 ${prior_step_output}

@@ -56,8 +56,11 @@ export async function prepareModelStep(args: PrepareArgs): Promise<PreparedStep>
   // not apply: they all reason about whether an *unaddressed* message is meant
   // for the assistant. Routing a named message through `other_absent` told it
   // the message belonged to somebody else.
+  // No message means no conversational position to route on: every fragment
+  // reasons about where an *arriving message* sits relative to the agent, and a
+  // maintenance session has none.
   const situation =
-    step.situational && mention === undefined
+    step.situational && mention === undefined && blockInput.message !== undefined
       ? computeSituation(
           blockInput.message.text,
           blockInput.history,

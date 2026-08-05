@@ -11,7 +11,16 @@ export const respond: ModelStep<Response> = {
   kind: "model",
   name: "respond",
   defaultRole: "reasoning",
-  contextBlocks: ["user_summary", "recent_messages", "incoming_message", "prior_step_output"],
+  // Both the message and the restatement, deliberately: the reply has to answer
+  // the actual message in its own terms, and `unresolved` is what it asks about
+  // when the conversation did not settle the request.
+  contextBlocks: [
+    "user_summary",
+    "recent_messages",
+    "incoming_message",
+    "request",
+    "prior_step_output",
+  ],
   outputFile: "response.md",
   buildSchema: () => schema,
 

@@ -1,5 +1,7 @@
 import type { AnyStep } from "./types.ts";
 import { adjust } from "./adjust.ts";
+import { compact } from "./compact.ts";
+import { debrief } from "./debrief.ts";
 import { draft } from "./draft.ts";
 import { impression } from "./impression.ts";
 import { schedule } from "./schedule.ts";
@@ -8,6 +10,7 @@ import { reason } from "./reason.ts";
 import { research } from "./research.ts";
 import { reflect } from "./reflect.ts";
 import { respond } from "./respond.ts";
+import { restate } from "./restate.ts";
 import { review } from "./review.ts";
 import { summarize } from "./summarize.ts";
 
@@ -15,6 +18,7 @@ import { summarize } from "./summarize.ts";
 const ALL: readonly AnyStep[] = [
   reflect,
   react,
+  restate,
   schedule,
   adjust,
   research,
@@ -23,7 +27,9 @@ const ALL: readonly AnyStep[] = [
   respond,
   summarize,
   review,
+  debrief,
   impression,
+  compact,
 ];
 
 const REGISTRY: ReadonlyMap<string, AnyStep> = new Map(ALL.map((step) => [step.name, step]));
