@@ -61,16 +61,31 @@ export const embedding = (vector: number[]): MockReply => ({ kind: "embed", vect
  * content in two fragments so the NDJSON aggregation path is exercised rather
  * than bypassed by a single-chunk response.
  */
-export async function mockOllama(replies: MockReply[]): Promise<MockOllama> {
+export interface MockOllamaOptions {
+  /**
+   * Hold each request this long before answering.
+   *
+   * Needed wherever a test is about *overlap*: an instantly-answering server
+   * lets two "concurrent" calls finish before either could have queued, so a
+   * lease test against it measures nothing and passes anyway.
+   */
+  delayMs?: number;
+}
+
+export async function mockOllama(
+  replies: MockReply[],
+  options: MockOllamaOptions = {},
+): Promise<MockOllama> {
   const requests: MockRequest[] = [];
   const queue = [...replies];
 
   const server: Server = createServer((req, res) => {
     const chunks: Buffer[] = [];
     req.on("data", (c: Buffer) => chunks.push(c));
-    req.on("end", () => {
+    req.on("end", async () => {
       const raw = Buffer.concat(chunks).toString("utf8");
       requests.push({ path: req.url ?? "", body: raw ? JSON.parse(raw) : {} });
+      if (options.delayMs) await new Promise((done) => setTimeout(done, options.delayMs));
 
       const next = queue.shift();
       if (!next) {

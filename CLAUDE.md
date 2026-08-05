@@ -1441,6 +1441,23 @@ nobody wants.
 channels of one instance; the shared daemon below made it the cross-instance one, with no change
 to this file.
 
+**The tool loop was not taking it, which is the worst place to have missed.** `callModel` leased
+dutifully; `toolLoop.ts` called `chat()` directly, so `research` and `reason` — the two steps the
+lease exists for, minutes each on the 27B — ran their whole loop unleased while the cheap final
+schema call queued politely. Fixed by leasing **per iteration**: an iteration is one call on the
+weights, and the tool execution between iterations is sqlite and HTTP that has no business holding
+the large model.
+
+**A test asserted this was fine.** `expect(waits[1]).toBeGreaterThanOrEqual(0)` is true of every
+number a `waitedMs` can hold, so it passed against a lease that recorded nothing — the same
+"written from the code" failure as the compaction threshold. It now asserts a real quantity, and
+`mockOllama` takes `delayMs` because **an instantly-answering server cannot test overlap at all**:
+two "concurrent" calls both finish before either could have queued. Any test about contention
+needs the server to hold.
+
+Found by running two instances and reading `waitedMs: 0` on every step of an 866s session in which
+one of them was visibly queued — the trace showed beta with a `reason.partial` and alpha without.
+
 ## One process, every agent
 
 `daemon.ts`, `instance/`, `adapters/console.ts`. One daemon hosts every instance under
@@ -1487,10 +1504,17 @@ question the log exists to answer, and an unprefixed line cannot answer it.
 
 Two `readline` interfaces on one stdin both receive every line and both print a prompt, so the
 terminal belongs to `adapters/console.ts` and the CLI adapters attach to it. A line typed there
-goes to *every* instance listening, each deciding on its own whether it was for them — the same
-arrangement as a Slack channel with two bots in it, which makes participation damping and standing
-down testable without a workspace. Measured: with two console instances and one open question,
-one answered and the other was damped into silence by its draw.
+goes to *every* instance listening, each deciding on its own whether it was for them. Measured:
+with two console instances and one open question, one answered and the other was damped into
+silence by its draw.
+
+**It is not a faithful Slack room, in the one respect that matters most here.** A console reply
+goes to stdout and nowhere else, so a sibling never sees it. On Slack it would arrive as an
+ordinary inbound message — `shouldIgnore` filters only the bot's *own* user id — which is what
+every stand-down mechanism depends on: the deferral reads history after its wait, `update` needs
+the arrival in its inbox, and `countParticipants` counts identities that have *spoken*. None of
+those can fire on the console. So the console tests participation damping, which is decided before
+anyone answers, and cannot test standing down at all.
 
 **Attaching is passive; the daemon calls `ready()` once everyone has started.** Opening the reader
 on the first subscriber meant a piped message could be delivered before the second instance had

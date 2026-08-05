@@ -827,6 +827,10 @@ async function executeModelStep(
       signal: ctx.signal,
     });
     ctx.budget.toolCalls += loop.calls.length;
+    // Queued time is not the session's to pay for, the same as `callModel`'s.
+    // The tool loop is where the large models actually spend their time, so
+    // omitting this charged a session for every other instance's research.
+    ctx.budget.waitedMs += loop.waitedMs;
     toolCalls = loop.calls;
     toolTranscript = loop.transcript;
   }

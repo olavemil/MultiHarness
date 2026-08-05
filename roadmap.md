@@ -579,18 +579,66 @@ are unchanged.
 
 - ~~Priority~~ — being named forces a reply, so a direct address already goes to the right one.
 - ~~Deferral~~ — built as a jittered pause before working on any message nobody addressed.
-  History is read after the wait, so `react` sees an answer that arrived and declines on its own.
-  No sibling list, no shared state, and an agent is never distinguished from a person.
+  History is read after the wait, so `react` sees any answer that arrived and declines on its own.
+  No sibling list, no shared state, and an agent is never distinguished from a person. **Built and
+  measured ineffective** — see below. The mechanism is sound; the timescale is wrong by two orders
+  of magnitude, and no setting of it fixes that.
 
 **Decisions it carries**
 
 - ~~Shared state or channel-only~~ — channel-only, as expected. Deferral is a timing problem
-  rather than a lock, which is exactly what the jitter is for. Two instances can still both
-  speak; what has changed is that it is now unlikely rather than certain.
-- **Never measured with two instances actually in a room.** The delay and the crowd term are
-  covered by unit tests and by arithmetic, not by observation. Whether 4s is long enough for a
-  sibling to answer depends on how fast a session runs, which varies by an order of magnitude
-  between a direct reply and one that researches.
+  rather than a lock, which is exactly what the jitter is for. ~~Two instances can still both
+  speak; what has changed is that it is now unlikely rather than certain.~~ **Wrong, and the
+  measurement below says why**: the jitter separates when they *start*, not when they *finish*,
+  and only finishing is observable to a sibling.
+- ~~**Never measured with two instances actually in a room.**~~ **Measured, and the deferral does
+  not work.** The shared console (4a) made this observable without Slack. Both instances took the
+  jittered pause, both then ran `react` (~5s) and `schedule` (~8–10s), and both scheduled work —
+  neither ever saw the other. **4s is not long enough and could not be**: it is compared against a
+  *session*, and a session that schedules `reason` or `research` is two orders of magnitude longer,
+  not one. Nothing short of a delay longer than a full session would let a sibling answer first,
+  and that delay would be unacceptable when no sibling exists.
+
+  What actually prevented a double answer was **participation, not deferral** — and only
+  probabilistically. Both instances drew against `p = 0.600`, so per message: both speak 36%,
+  exactly one 48%, **neither 16%**. "Unlikely rather than certain" is not what 36% means, and the
+  16% is arguably worse — an addressed room where nobody answers.
+
+  **The 36% then happened.** A second run of the same question had both instances pass the draw
+  and both answer, 866s end to end, with near-identical replies — "Use SQLite unless you have a
+  specific reason not to" against "Start with SQLite unless you have a specific reason not to".
+  That is the failure this item exists to prevent, observed, and nothing in the current design
+  stops it.
+
+  **It is also slow in a way worth stating separately.** Both scheduled real work: `reason` at
+  274s and 280s, `research` at 429s, `respond` at 126s and 98s. A question one instance answers
+  alone in ~30s took the pair 14 minutes. The lease does not *add* that — ollama would have queued
+  them anyway — but the room's latency is additive in the number of agents who decide to work, and
+  participation damping is the only thing that reduces that number.
+
+  Incidental, and against a documented finding: **both instances picked `reason`**, where CLAUDE.md
+  records that `schedule` "reaches for `research` by default and effectively never picks `reason`
+  or `draft`". One observation on a deliberative question — a data point, not a conclusion.
+
+  **The run also found a real defect**: `waitedMs` was 0 on every step despite one instance being
+  visibly queued, because `toolLoop.ts` never took the lease. Fixed; see CLAUDE.md.
+
+- **The crowd term cannot see a silent sibling.** `countParticipants` counts identities that have
+  *spoken* in this instance's own history, so on the first message of a conversation a two-agent
+  room scores `participants = 2` → `crowd = 1.0`: no damping at all, at exactly the moment both
+  agents are deciding whether to answer the same question. It starts working only after a sibling
+  has spoken — i.e. after the double answer it exists to prevent. This is not an arithmetic slip;
+  it is the honest consequence of instances not knowing about each other, and the fix (if there is
+  one) has to come from something observable in the channel.
+
+- **The console room is not a faithful Slack room**, in the one respect this item cares about. A
+  console reply goes to stdout and nowhere else, so a sibling never sees it; on Slack it arrives as
+  an ordinary inbound message, since `shouldIgnore` filters only the bot's own user id. Every
+  stand-down path depends on that arrival — the deferral reads history after its wait, `update`
+  needs it in the inbox, `countParticipants` needs it in history. So the console measures
+  participation damping honestly and **cannot measure standing down at all**. Making a console
+  send fan out to the *other* attached instances would close that gap and is a small change; it is
+  not built, because it changes what agents react to and is a decision rather than a fix.
 - ~~Whether siblings read each other's knowledge stores~~ — **settled: they do not, and they do
   not know about each other at all.** There is no guarantee two instances even connect to the
   same workspace, so "sibling" is not a semantic relationship. Running several in one process is
