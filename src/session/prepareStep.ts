@@ -54,7 +54,7 @@ export async function prepareModelStep(args: PrepareArgs): Promise<PreparedStep>
 
   // Being named settles the reply, so the conversational-position fragments do
   // not apply: they all reason about whether an *unaddressed* message is meant
-  // for the assistant. Routing a named message through `other_absent` told it
+  // for the agent. Routing a named message through `other_absent` told it
   // the message belonged to somebody else.
   // No message means no conversational position to route on: every fragment
   // reasons about where an *arriving message* sits relative to the agent, and a
@@ -88,8 +88,8 @@ export async function prepareModelStep(args: PrepareArgs): Promise<PreparedStep>
     // Analyst voice: this feeds `react`, a classification step on the fast
     // model. Second person there invites the model to read "you" as itself.
     agent_mentioned: mention
-      ? `Yes — the message names the assistant as "${mention}".`
-      : "No — the message does not name the assistant.",
+      ? `Yes — the message names the agent as "${mention}".`
+      : "No — the message does not name the agent.",
     mentioned_other: mentionedOther,
     budget_remaining: args.budgetRemaining ?? "Not constrained.",
     situation: fragment ? render(fragment.text, { mentioned_other: mentionedOther }) : "",

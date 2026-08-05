@@ -47,7 +47,6 @@ CREATE TABLE IF NOT EXISTS contents (
   superseded_by INTEGER REFERENCES contents(id)
 );
 CREATE INDEX IF NOT EXISTS contents_entry ON contents (entry_id);
-CREATE INDEX IF NOT EXISTS contents_live ON contents (entry_id, superseded_by);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5(topic, summary, body);
 
@@ -80,6 +79,14 @@ function migrate(db: DatabaseSync): void {
   if (!columns.some((c) => c.name === "superseded_by")) {
     db.exec(`ALTER TABLE contents ADD COLUMN superseded_by INTEGER REFERENCES contents(id)`);
   }
+
+  // Created here rather than in SCHEMA, and that is the whole point. An index
+  // over `superseded_by` sitting in the schema block runs *before* this
+  // function, and on an existing store the CREATE TABLE above it is a no-op —
+  // so it referenced a column that did not exist yet and threw, before the
+  // migration that would have added it could run. Anything touching a migrated
+  // column belongs after the migration, not beside the table it extends.
+  db.exec(`CREATE INDEX IF NOT EXISTS contents_live ON contents (entry_id, superseded_by)`);
 }
 
 export function openKnowledgeDb(knowledgeDir: string): DatabaseSync {

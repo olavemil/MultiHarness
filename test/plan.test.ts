@@ -21,7 +21,11 @@ import {
  */
 
 const REACTION = (respond: boolean) =>
-  JSON.stringify({ reason: respond ? "asked me" : "not for me", respond });
+  JSON.stringify({
+    reason: respond ? "asked me" : "not for me",
+    verdict: respond ? "reply" : "for_someone_else",
+    interest: respond ? 0.9 : 0,
+  });
 const SCHEDULE = (steps: { step: string; topic: string }[]) =>
   JSON.stringify({ reason: "plan this", needs_fact: false, needs_thought: true, steps });
 const RESPONSE = JSON.stringify({ message: "Right — here is the plan." });

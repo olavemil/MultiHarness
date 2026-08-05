@@ -41,7 +41,7 @@ export type MockReply =
   | { kind: "status"; status: number; body: string }
   /** `/api/embed` answers with plain JSON, not the NDJSON stream. */
   | { kind: "embed"; vector: number[] }
-  /** An assistant turn that asks for tools instead of answering. */
+  /** An agent turn that asks for tools instead of answering. */
   | { kind: "tools"; calls: { name: string; args: Record<string, unknown> }[] };
 
 /** Convenience: a successful reply carrying `content`. */

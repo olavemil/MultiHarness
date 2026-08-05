@@ -23,6 +23,19 @@ export const RoleConfig = z.object({
   think: z.boolean().optional(),
   /** Hard-empty tool allowlist, enforced by the harness rather than by the prompt. */
   no_tools: z.boolean().default(false),
+  /**
+   * Run one call at a time on this model, queueing the rest.
+   *
+   * For the large weights. Two sessions reaching a `reasoning` step at once do
+   * not get two models — ollama queues them behind each other — so both
+   * deadlines run while only one call progresses and both can time out. Waiting
+   * here instead makes the queue explicit, keeps it out of the timeout, and
+   * staggers the answers so the second session can see the first.
+   *
+   * Leave it off for `fast`: `update` runs *alongside* the step it supervises,
+   * and serialising them would deadlock the supervisor.
+   */
+  exclusive: z.boolean().default(false),
   options: z.record(z.string(), OptionValue).default({}),
 });
 export type RoleConfig = z.infer<typeof RoleConfig>;
@@ -58,6 +71,19 @@ export const ParticipationConfig = z.object({
   presence_window: z.number().int().positive().default(12),
   /** Messages examined to count how many people are present. */
   participant_window: z.number().int().positive().default(24),
+  /**
+   * Floor on the crowd term, so a very large room does not silence the agent
+   * outright. `2 / participants`, clamped here and at 1.
+   */
+  crowd_min: z.number().positive().default(0.2),
+  /**
+   * Pause before working on a message nobody addressed, jittered by ±50%.
+   *
+   * Lets anyone else answer first — sibling instance or human alike — so that
+   * several agents in a room stop racing to be first. Zero disables it. Being
+   * named is never delayed.
+   */
+  interject_delay_ms: z.number().int().min(0).default(4_000),
   damping_min: z.number().positive().default(0.25),
   damping_max: z.number().positive().default(2),
   max: z.number().min(0).max(1).default(1),
@@ -201,6 +227,16 @@ export const Config = z.object({
      * restate the latest one and call it a pattern.
      */
     impression_threshold: z.number().int().positive().default(5),
+    /**
+     * Emoji the agent marks a message with when it decides an acknowledgement
+     * is wanted and a written reply is not. Empty means stay silent.
+     *
+     * Fixed rather than model-chosen on purpose: predictable, never
+     * embarrassing in front of a whole channel, and it costs no extra call. A
+     * chosen reaction is only worth the second call where expressiveness earns
+     * it, which is not here.
+     */
+    acknowledge_emoji: z.string().default("+1"),
   }),
 
   /**

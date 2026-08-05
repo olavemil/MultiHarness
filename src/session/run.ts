@@ -36,7 +36,7 @@ import {
 import { getStep } from "../steps/registry.ts";
 import type { AnyStep, ModelStep } from "../steps/types.ts";
 import type { ToolCallRecord, ToolContext } from "../tools/types.ts";
-import type { Reaction } from "../steps/react.ts";
+import { wantsReply, type Reaction } from "../steps/react.ts";
 import type { Reflection } from "../steps/reflect.ts";
 import type { Impression } from "../steps/impression.ts";
 import type { Compaction } from "../steps/compact.ts";
@@ -46,6 +46,7 @@ import type { Adjustment } from "../steps/adjust.ts";
 import type { Schedule } from "../steps/schedule.ts";
 import type { Response as StepResponse } from "../steps/respond.ts";
 import type { Paths } from "../store/paths.ts";
+import type { StoredReaction } from "../store/reactionStore.ts";
 import { createSession, sealStep, workingFilePath, type SessionHandle } from "../store/sessionStore.ts";
 import { writeStepTrace } from "../store/trace.ts";
 
@@ -59,6 +60,8 @@ export interface RunSessionOptions {
   trigger: Trigger;
   identity: Identity;
   history: readonly ChannelMessage[];
+  /** Reactions standing on the agent's own messages here. Read by `reflect`. */
+  reactions?: readonly StoredReaction[] | undefined;
   promptsDir?: string | undefined;
   /** Overrides the stored prior session; injectable for tests. */
   prior?: PriorSession | undefined;
@@ -67,6 +70,15 @@ export interface RunSessionOptions {
   /** Injectable so prompt-variant selection is deterministic under test. */
   rng?: (() => number) | undefined;
   signal?: AbortSignal | undefined;
+  /**
+   * Mark the triggering message instead of replying to it. Called when `react`
+   * decides an acknowledgement is wanted and a written answer is not.
+   *
+   * Silence is the worst outcome in a one-to-one channel — indistinguishable
+   * from the daemon being down — so "nothing to add" should still leave a
+   * trace. The adapter may not support it, in which case nothing happens.
+   */
+  onAcknowledge?: ((messageId: string, emoji: string) => Promise<void>) | undefined;
   /**
    * Called the moment `respond` seals, before the closing steps run.
    *
@@ -284,6 +296,7 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
     requestCorrection,
     arrivals,
     plan,
+    reactions: opts.reactions,
     ...(compactionTarget
       ? { compactionTarget: { topic: compactionTarget.topic, blocks: compactionTarget.blocks } }
       : {}),
@@ -453,22 +466,37 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
             mentioned: mention !== undefined,
             directFollowup:
               computeSituation(message?.text ?? "", history, config.agent).distance === "immediate",
-            modelSaidYes: reaction.respond,
+            interest: reaction.interest,
           },
           participation,
         );
         const drawn = drawParticipation(decision, opts.rng);
         participationTrace = { ...decision, draw: drawn.draw, spoke: drawn.speak };
         if (!drawn.speak) {
+          // Damped into silence. Recorded as `tangent` rather than a bare "no":
+          // the step judged the message worth answering and the draw disagreed,
+          // which is a different thing from the message not being for us.
           reaction = {
             ...reaction,
-            respond: false,
+            verdict: "tangent",
             reason: `${reaction.reason} (held back: p=${decision.probability.toFixed(3)}, draw=${drawn.draw.toFixed(3)})`,
           };
         }
       }
 
-      if (reaction.respond) {
+      // Marked rather than answered. Deliberately *not* gated on participation:
+      // an emoji is not a message, it does not crowd a channel, and damping it
+      // would leave the person with nothing at all — the outcome this exists to
+      // avoid.
+      if (
+        reaction.verdict === "acknowledge" &&
+        message !== undefined &&
+        config.session.acknowledge_emoji !== ""
+      ) {
+        await opts.onAcknowledge?.(message.id, config.session.acknowledge_emoji);
+      }
+
+      if (wantsReply(reaction)) {
         // Everything downstream needs the task, not the wording. Queued here
         // rather than at session start so it stays off the declining path,
         // which is the common one; skipped without history, since a first
@@ -609,7 +637,7 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
           `${queue.length} remaining step(s).`,
       );
       // A promised reply still gets written, from whatever was gathered.
-      const owed = reaction?.respond === true && reply === undefined;
+      const owed = reaction !== undefined && wantsReply(reaction) && reply === undefined;
       queue.length = 0;
       if (owed) queue.push({ name: config.session.respond_step, topic: "" });
     }
@@ -703,7 +731,9 @@ async function sealDirectReaction(
 
   const value: Reaction = {
     reason: `Addressed by name ("${mention}"), matched by the harness rather than judged.`,
-    respond: true,
+    verdict: "reply",
+    // Being named is not a probability, so nothing downstream reads this.
+    interest: 1,
   };
 
   const content = (step as ModelStep<Reaction>).render(value);
@@ -827,6 +857,9 @@ async function executeModelStep(
     working.end();
   }
   ctx.budget.modelCalls += result.trace.attempts.length;
+  // Queueing is not work. Without this a session behind a busy model would burn
+  // its wallclock waiting and truncate itself before doing anything.
+  ctx.budget.waitedMs += result.trace.waitedMs;
 
   const content = step.render(result.value);
   await sealStep(session, step.outputFile, content);

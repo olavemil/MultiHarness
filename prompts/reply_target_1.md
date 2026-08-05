@@ -1,4 +1,4 @@
-Below is a transcript from a group chat. One of the participants is an assistant called
+Below is a transcript from a group chat. One of the participants is an agent called
 **${agent_name}**; its messages are marked `you`. Ignore that label — you are not that
 participant. You are analysing the conversation from outside it.
 

@@ -1,6 +1,18 @@
-import type { InboundMessage } from "../core/types.ts";
+import type { InboundMessage, InboundReaction } from "../core/types.ts";
 
 export type InboundHandler = (message: InboundMessage) => void;
+export type ReactionHandler = (reaction: InboundReaction) => void;
+
+/**
+ * What an adapter delivers. A record rather than a positional argument so a
+ * transport that has no notion of reactions simply never calls that one, and
+ * adding a third kind later does not change every implementation.
+ */
+export interface AdapterHandlers {
+  onMessage: InboundHandler;
+  /** Optional: only transports with reactions ever call it. */
+  onReaction?: ReactionHandler | undefined;
+}
 
 /**
  * A transport binding. Adapters carry no pipeline logic — they turn a transport
@@ -11,8 +23,13 @@ export type InboundHandler = (message: InboundMessage) => void;
  */
 export interface Adapter {
   id: string;
-  start(onMessage: InboundHandler): Promise<void>;
+  start(handlers: AdapterHandlers): Promise<void>;
   send(channelId: string, text: string): Promise<void>;
+  /**
+   * Mark a message rather than replying to it. Optional: a transport without
+   * reactions simply does not offer it, and the harness falls back to silence.
+   */
+  react?(channelId: string, messageId: string, emoji: string): Promise<void>;
   /** Optional progress line. Never load-bearing — adapters may ignore it. */
   status?(channelId: string, headline: string): void;
   /**

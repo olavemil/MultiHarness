@@ -568,62 +568,105 @@ An earlier version of this item proposed counting siblings toward "agent share" 
 would have made the instances aware of each other's nature, which is exactly what the design
 avoids. Dropped.
 
-**What is still worth checking** is whether the formula damps crowding as intended.
-`damping = fairShare / agentShare` clamped to 2: more participants lowers `fairShare`, but a
-quiet agent has a tiny `agentShare` and the ratio pins to the cap either way. A near-silent agent
-in a six-person room sits at the same damping as in a three-person one, so crowding only bites
-once the agent is already talking. That may be right; it has not been decided on purpose.
+~~**Whether the formula damps crowding as intended**~~ — it did not, and now does. A separate
+`crowd = 2 / participants` term was added, because `fairShare / agentShare` pins to its cap
+whenever the agent has said little: a near-silent agent in a six-person room sat at exactly the
+same damping as in a three-person one. Presence damping only bites once the agent is already
+talking, which is the opposite of "crowdedness reduces spam". Two participants gives 1.0, so DMs
+are unchanged.
 
 **Scope**
 
-- Priority: being named already forces a reply, so a direct address goes to the right one.
-- Deferral: an instance that is not named waits, sees whether a sibling answered, and stands
-  down. Needs the trigger work from item 2.
+- ~~Priority~~ — being named forces a reply, so a direct address already goes to the right one.
+- ~~Deferral~~ — built as a jittered pause before working on any message nobody addressed.
+  History is read after the wait, so `react` sees an answer that arrived and declines on its own.
+  No sibling list, no shared state, and an agent is never distinguished from a person.
 
 **Decisions it carries**
 
-- Whether instances coordinate through shared state or purely through the channel. Channel-only
-  is simpler, more robust, and fits "the agent does not need to know whether it is talking to a
-  human" — but it makes deferral a timing problem rather than a lock.
-- Whether siblings read each other's knowledge stores. Sharing makes them one agent with two
-  voices; separate stores make them genuinely distinct, and probably more interesting.
+- ~~Shared state or channel-only~~ — channel-only, as expected. Deferral is a timing problem
+  rather than a lock, which is exactly what the jitter is for. Two instances can still both
+  speak; what has changed is that it is now unlikely rather than certain.
+- **Never measured with two instances actually in a room.** The delay and the crowd term are
+  covered by unit tests and by arithmetic, not by observation. Whether 4s is long enough for a
+  sibling to answer depends on how fast a session runs, which varies by an order of magnitude
+  between a direct reply and one that researches.
+- ~~Whether siblings read each other's knowledge stores~~ — **settled: they do not, and they do
+  not know about each other at all.** There is no guarantee two instances even connect to the
+  same workspace, so "sibling" is not a semantic relationship. Running several in one process is
+  a resource question — memory and CPU — and nothing else. Anything that would have one instance
+  reason about another is out of scope by design, not merely unbuilt.
 
 ---
 
 ## 4a. A shared supervisor across instances
 
-One daemon hosting every instance, instead of one process per agent. Proposed after running two
-side by side, and it is the piece that makes item 4 tractable rather than merely specified.
+**Built.** One daemon hosts every instance under `~/.multiharness/`; `npm run dev` starts all of
+them and `npm run dev <name>` starts the ones named. See CLAUDE.md, "One process, every agent".
 
-**Scope**
+**What that actually took, and what it did not.** The item asked for a queue across instances.
+`model/lease.ts` — built for the separate concern of two agents timing out against one ollama —
+already *was* that queue, FIFO per model id with queued time excluded from the session budget; it
+simply could not reach across process boundaries. So the instances did not need a queue built for
+them, they needed to be in the same process, and no leasing code changed.
 
-- A single daemon holding N instances, each with its own agent identity, `working_dir`, and Slack
-  configuration — potentially against different workspaces.
-- One queue across instances, so a long session for one agent does not starve another. Per-channel
-  queues already prevent starvation *between channels*; this is the same property between agents.
-- **A shared `react` gate.** One message, judged once by every instance: "does this need handling,
-  and how much do I want it?" Instances answering no exit immediately; those answering yes are
-  ordered by stated interest.
-- Sessions run sequentially or in parallel — see below.
+Delivered:
 
-### What a shared daemon actually buys
+- N instances in one process, each with its own agent identity, `working_dir`, stores, and Slack
+  configuration, potentially against different workspaces. Verified live: galatea and nephele
+  connect as different bot users from one process.
+- **Per-instance secrets** (`instance/env.ts`), which was the concrete blocker below.
+- **Per-instance logging** — `galatea [slack]: thinking` — because with several agents in one
+  process an unprefixed line cannot answer "which of them just failed a session?".
+- **A shared console.** One reader on stdin, fanned out to every attached instance, which makes
+  the terminal a room and participation damping testable without a workspace.
+- Sequential by consequence rather than by rule: the lease already serialises the shared weights.
 
-Not a participation fix — instances are *meant* to see each other as ordinary participants, and
-nothing here should change that. What it buys is **coordination before the fact** rather than
-damping after it: today each instance decides alone and the room finds out afterwards whether two
-of them spoke. A shared gate lets one message be judged once by everybody, with the interested
-ranked against each other.
+Not built, and no longer obviously wanted:
 
-That is a different mechanism from participation and should stay one. Participation asks "does
-this room need another message from me"; the gate asks "of the agents that want this one, whose
-turn is it". Fusing them would put a stochastic draw inside a ranking.
+- **The shared `react` gate.** It was an admission test to stop the machine being spent on work
+  nobody wants. The lease already orders the expensive part, `react` is cheap, and the gate would
+  add a scheduling concept that has to know about every instance at once — the thing this item is
+  otherwise careful not to build. Worth revisiting only if N grows past two or three, where N
+  `fast` calls per message on the latency path starts to matter.
 
-### `interest` stops being optional
+### The bug it produced was a silence, again
 
-Ranking the instances that want a message needs a number, not a boolean. That is exactly the
-`interest` field item 4b proposes, so **4b becomes a prerequisite rather than an adjacent idea**.
-Being named must bypass the ranking entirely — a message naming one agent goes to that agent
-whatever anyone else's interest is, and mention detection is already per-agent and deterministic.
+Attaching to the console opened the reader, so with a piped message the first instance to start
+consumed the line before the second had attached. The second ran no session at all — and the log
+was indistinguishable from it having declined to answer. It was read that way for a run.
+
+Attaching is now passive and the daemon calls `ready()` once every instance is up. Interactive
+typing hides the race completely, so it is pinned by a test that fails against the old behaviour
+rather than by inspection.
+
+**Second time a silence has been misread as a decision here**, after `defer_to_session`. Silence
+is the one output with no evidence in it.
+
+### It is a scheduler, not a coordinator
+
+**Instances do not know about each other, and this does not change that.** There is no guarantee
+two of them even connect to the same workspace, so they will usually be handling entirely
+different messages. Running them in one process is a resource decision — one machine, one set of
+pinned models — and nothing semantic follows from it.
+
+So the single queue exists to stop one instance's five-minute research session starving another's
+reply, exactly as per-channel queues do within an instance. None of it is visible to an instance,
+which only ever sees its own channel — and `startInstance` enforces that by construction: it
+reaches everything through its own `config`, `paths`, `env`, and `log`, holds no module-level
+state, and is never handed a reference to a sibling.
+
+An earlier draft of this section had the gate ranking instances "against each other" to decide
+who speaks. That is coordination, it would require siblings to know of one another, and it is
+wrong. Whether an agent speaks stays a per-instance decision — mentions, relevance, and
+participation damping — settled without reference to anyone else.
+
+### `interest` was built for the gate, and earns its keep without it
+
+Ranking instances against each other needs a number rather than a boolean, which made 4b a
+prerequisite. The gate was then not built — but `interest` had already replaced the boolean in
+weighted participation, where it does the more useful job: "barely worth saying" and "I have a
+real point" used to arrive identically. It is available if the gate is ever wanted.
 
 ### Parallel buys less than it looks
 
@@ -633,29 +676,53 @@ large KV cache is live" guarantee and returns very little — **sequential is bo
 nearly as fast** while the role table points several instances at the same weights. It becomes
 worth revisiting only if instances are deliberately given different models.
 
-**Decisions it carries**
+**Decisions it carried, and how they were settled**
 
-- **`process.loadEnvFile` is global, and that is the concrete blocker.** `loadInstanceEnv` reads
-  `<instance>/.env` straight into `process.env`, and `selectAdapter` reads
-  `process.env.SLACK_BOT_TOKEN`. Two instances in one process would overwrite each other's
-  tokens and both connect as whichever loaded last. Per-instance secrets have to be read into a
-  scoped object and passed to the adapter, never into the environment.
-- **How many of the interested actually speak.** Top interest only is the safe default; anything
-  above a threshold reintroduces the crowding this exists to prevent. Whatever the rule, it wants
-  to be one place, not a per-instance setting.
-- **N instances means N `fast` calls per message**, before any of them does real work. Fine at
-  two, linear thereafter, and it lands on the latency path.
-- **Whether siblings share a knowledge store.** Unchanged from item 4: sharing makes them one
-  agent with two voices; separate stores make them genuinely distinct, and probably more
-  interesting. A shared daemon makes sharing *easy*, which is a reason to decide it on purpose
-  rather than by default.
-- **One process is one blast radius.** Today a crash takes down one agent; then it takes down all
-  of them. The per-channel drain already isolates a failed session, and the same discipline has
-  to extend to a failed instance.
+- **`process.loadEnvFile` is global, and that was the concrete blocker.** Settled by
+  `instance/env.ts`: secrets are read into a scoped object and passed to the adapter, never into
+  the environment. **The file wins over the environment**, inverting `--env-file`, because one
+  exported `SLACK_BOT_TOKEN` would otherwise be applied to every instance and connect them all as
+  one bot.
+- **Keeping the instances isolated inside one process.** Enforced by construction rather than by
+  care: `startInstance` closes over its own config, paths, env, and logger, and holds no
+  module-level state. The one thing deliberately shared is the model lease, which is the point.
+- **One process is one blast radius.** An instance that fails to start is reported and skipped; a
+  failed session was already isolated by the per-channel drain. What is *not* covered is an
+  uncaught throw outside both — that still takes the process down, and now takes every agent with
+  it.
+
+**Still open**
+
+- **How many of the interested actually speak**, if the gate is ever built. Top interest only is
+  the safe default; anything above a threshold reintroduces the crowding this exists to prevent.
+- **N instances means N `fast` calls per message.** Fine at two, linear thereafter, and on the
+  latency path. This is the argument for the admission gate, and the reason to revisit it if N
+  grows.
+- **An alternate instance root.** `MULTIHARNESS_HOME` still means one agent, so there is no way to
+  point the daemon at a whole set other than `~/.multiharness/`. Wanted only for testing so far.
 
 ---
 
 ## 4b. Reactions, and what `react` is actually asked
+
+**Inbound is built.** Somebody reacting to one of the agent's messages is recorded and read by
+`reflect` — see CLAUDE.md. It needed no new step and no session: a reaction is a signal about how
+an answer landed, which is exactly the question `reflect` already exists to answer, and which it
+previously had to infer from prose.
+
+**Outbound is built too.** `react` returns one of four verdicts plus `interest`, `acknowledge`
+marks the message with a configured emoji, and participation takes the continuous interest in
+place of a boolean. **13 pass · 0 unstable · 0 fail.** See CLAUDE.md.
+
+**Still open**
+
+- **A chosen reaction for `tangent`.** Fixed emoji only, for `acknowledge`. Choosing one costs a
+  second `fast` call and is only worth it where expressiveness earns it.
+- **Per-instance reaction vocabulary**, which is part of how an agent comes across.
+- **Rate limiting**, shared with the `message` step and status sends.
+- **Whether the engagement axis belongs in instance config.** The `interest` number exists now;
+  what does not is a per-instance setting for how readily this agent acts on it.
+
 
 An emoji reaction as an alternative to silence. Three observations set the shape:
 
@@ -675,17 +742,17 @@ nothing extra and carries what the reaction needs:
 |---|---|---|
 | `reply` | wants a real answer | respond |
 | `acknowledge` | acknowledgement, no follow-up warranted | fixed 👍, no reply |
-| `for_someone_else` | aimed at another participant | nothing at all |
+| `for_someone_else` | aimed at another agentnt | nothing at all |
 | `tangent` | continuation the agent is not engaged by | optionally one `fast` call to pick a reaction |
 
 Only `tangent` justifies a second call, and only to choose from a candidate list annotated with
 what each conveys — the same trick as `selectable_steps`, where the schema is compiled from what
 is actually permitted.
 
-**Interest and participation are both needed — they answer different questions.**
+**Interest and participation are both neededagentnswer different questions.**
 Participation asks *does this room need another message from me*: volume damping, most useful
-when several people are talking. Interest asks *do I have something to contribute*: it is what
-drives opening a thread reply or leaving a reaction at all. A crowded room can suppress a highly
+when several people are talking. Interest asks *do I have something to contribute*: it agent
+drives opening a thread reply or leaving a reaction at agentowded room can suppress a highly
 interested agent, and an uninterested one stays quiet in an empty room. Neither subsumes the
 other.
 
@@ -694,7 +761,7 @@ boolean and scales the odds `×1.5` or `×0.5`. A continuous interest is strictl
 the same formula, and it is the natural place for "seldom engages with my replies" to become a
 number rather than prose.
 
-**Migration cost:** `react`'s schema and its 13-case suite assert a boolean `respond`. Derive
+**Migration cost:** `react`'s schema and its 13-case suite assert a boolean `respondagent
 `respond` from the verdict so the suite keeps measuring the same decision, then add cases for
 the new distinctions.
 
@@ -712,7 +779,7 @@ addressed, is input being requested* — which is a pure-assistant frame, and un
 sharing a thought correctly produces silence.
 
 A conversation partner would have something to say about the song. The missing question is not
-"was I asked?" but **"do I have anything to add, and do I want to?"** — which is what `interest`
+"was I asked?" but **"do I have anything to add, and do I want to?"** — agentwhat `interest`
 is for.
 
 This is a personality axis, so it belongs in instance config rather than hardcoded: how readily

@@ -15,9 +15,9 @@ export interface ToolCall {
 }
 
 export interface ChatMessage {
-  role: "system" | "user" | "assistant" | "tool";
+  role: "system" | "user" | "agent" | "tool";
   content: string;
-  /** Present on assistant turns that asked for tools. */
+  /** Present on agent turns that asked for tools. */
   tool_calls?: ToolCall[];
   /** Names the tool a `role: "tool"` message is answering. */
   tool_name?: string;

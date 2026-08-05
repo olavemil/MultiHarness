@@ -9,7 +9,11 @@ import { mockOllama, reply, toolCall, type MockOllama, type MockReply } from "./
 import { tempWorkingDir, testConfig, testHistory, testIdentity, testMessage } from "./helpers/fixtures.ts";
 
 const REACTION = (respond: boolean) =>
-  JSON.stringify({ reason: respond ? "asked me directly" : "aimed at someone else", respond });
+  JSON.stringify({
+    reason: respond ? "asked me directly" : "aimed at someone else",
+    verdict: respond ? "reply" : "for_someone_else",
+    interest: respond ? 0.9 : 0,
+  });
 const SCHEDULE = JSON.stringify({
   reason: "answer directly",
   needs_fact: false,
@@ -109,7 +113,7 @@ describe("runSession", () => {
     const prompt = await read(result.session.traceDir, "react.prompt.md");
     expect(prompt).toContain("what version of node is this project on?");
     expect(prompt).not.toContain("${");
-    await expect(read(result.session.traceDir, "react.raw.txt")).resolves.toContain("respond");
+    await expect(read(result.session.traceDir, "react.raw.txt")).resolves.toContain("verdict");
   });
 
   it("routes each step to the model role its config assigns", async () => {
@@ -234,7 +238,7 @@ describe("runSession", () => {
     expect(await read(result.session.dir, "reaction.md")).toContain("Addressed by name");
     const meta = JSON.parse(await read(result.session.traceDir, "react.meta.json"));
     expect(meta.model).toBeNull();
-    expect(meta.parsed.respond).toBe(true);
+    expect(meta.parsed.verdict).toBe("reply");
   });
 
   it("skips react even when steps remain to be chosen — schedule chooses them", async () => {
@@ -308,7 +312,7 @@ describe("runSession", () => {
     expect(server.requests[0]?.body.model).toBe("test-fast");
     // The prompt states the mention verdict as settled fact.
     expect(server.requests[0]?.body.messages?.[0]?.content).toContain(
-      "does not name the assistant",
+      "does not name the agent",
     );
   });
 

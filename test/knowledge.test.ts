@@ -1,5 +1,9 @@
-import { describe, expect, it, vi } from "vitest";
-import { KNOWLEDGE, openMemoryDb } from "../src/knowledge/db.ts";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { afterAll, describe, expect, it, vi } from "vitest";
+import { KNOWLEDGE, openKnowledgeDb, openMemoryDb } from "../src/knowledge/db.ts";
 import {
   appendContent,
   createEntry,
@@ -306,5 +310,83 @@ describe("impressions", () => {
       session: "000007",
       step: "reflect",
     });
+  });
+});
+
+/**
+ * Opening a store that predates a schema change.
+ *
+ * Every other test here starts from `openMemoryDb`, which builds the current
+ * schema from scratch — so a migration could be completely broken and the suite
+ * would stay green. It was: an index over `superseded_by` sat in the schema
+ * block, which runs *before* the migration, and on an existing store the
+ * `CREATE TABLE IF NOT EXISTS` above it is a no-op. The index referenced a
+ * column that did not exist yet and threw, taking the whole session with it.
+ * Caught in a live agent, not here.
+ */
+describe("opening a store written by an older build", () => {
+  const dirs: string[] = [];
+
+  afterAll(async () => {
+    for (const dir of dirs) await rm(dir, { recursive: true, force: true });
+  });
+
+  /** The `contents` table exactly as it stood before compaction existed. */
+  async function legacyStore(): Promise<string> {
+    const dir = await mkdtemp(path.join(tmpdir(), "multiharness-legacy-"));
+    dirs.push(dir);
+    const db = new DatabaseSync(path.join(dir, "knowledge.sqlite"));
+    db.exec(`
+      CREATE TABLE entries (
+        id INTEGER PRIMARY KEY, namespace TEXT NOT NULL, topic TEXT NOT NULL,
+        summary TEXT NOT NULL, created_at TEXT NOT NULL,
+        created_session TEXT NOT NULL, embedding BLOB, UNIQUE (namespace, topic)
+      );
+      CREATE TABLE contents (
+        id INTEGER PRIMARY KEY,
+        entry_id INTEGER NOT NULL REFERENCES entries(id) ON DELETE CASCADE,
+        text TEXT NOT NULL, session TEXT NOT NULL, step TEXT NOT NULL, at TEXT NOT NULL
+      );
+      CREATE VIRTUAL TABLE entries_fts USING fts5(topic, summary, body);
+      CREATE TABLE rejections (
+        id INTEGER PRIMARY KEY, namespace TEXT NOT NULL, candidate TEXT NOT NULL,
+        verdict TEXT NOT NULL, reason TEXT NOT NULL, session TEXT NOT NULL,
+        step TEXT NOT NULL, at TEXT NOT NULL
+      );
+      INSERT INTO entries (namespace, topic, summary, created_at, created_session)
+        VALUES ('knowledge', 'metal memory', 'the ceiling', '2026-08-04', '000001');
+      INSERT INTO contents (entry_id, text, session, step, at)
+        VALUES (1, 'about 36 GB', '000001', 'research', '2026-08-04');
+    `);
+    db.close();
+    return dir;
+  }
+
+  it("adds the column instead of throwing", async () => {
+    const dir = await legacyStore();
+    const db = openKnowledgeDb(dir);
+
+    const columns = (db.prepare("PRAGMA table_info(contents)").all() as { name: string }[]).map(
+      (c) => c.name,
+    );
+    expect(columns).toContain("superseded_by");
+    db.close();
+  });
+
+  it("leaves what was already stored alone", async () => {
+    const dir = await legacyStore();
+    const db = openKnowledgeDb(dir);
+
+    const entry = findEntry(db, KNOWLEDGE, "metal memory");
+    expect(entry).toBeDefined();
+    // Pre-existing rows have a null `superseded_by`, so they read as live.
+    expect(readContents(db, entry!.id).map((c) => c.text)).toEqual(["about 36 GB"]);
+    db.close();
+  });
+
+  it("is safe to open twice", async () => {
+    const dir = await legacyStore();
+    openKnowledgeDb(dir).close();
+    expect(() => openKnowledgeDb(dir).close()).not.toThrow();
   });
 });

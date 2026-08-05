@@ -6,6 +6,7 @@ import { resolveStepModel } from "../src/model/roles.ts";
 import { prepareModelStep } from "../src/session/prepareStep.ts";
 import { resolveReplyTarget } from "../src/session/replyTarget.ts";
 import { getStep } from "../src/steps/registry.ts";
+import { wantsReply, type Reaction } from "../src/steps/react.ts";
 import type { ModelStep } from "../src/steps/types.ts";
 import type { PriorSession } from "../src/store/priorSession.ts";
 
@@ -260,6 +261,15 @@ export async function runStep(
   });
 
   const value = result.value as Record<string, unknown>;
+
+  // `react` reports a verdict now, and `respond` is derived from it. Derived
+  // *here through the same function the session uses*, never reimplemented — an
+  // eval that computed its own version of this would be measuring its own copy
+  // of the rule, which is the drift this harness exists to avoid.
+  if (stepName === "react" && value["verdict"] !== undefined) {
+    value["respond"] = wantsReply(value as unknown as Reaction);
+  }
+
   const field = testCase.field ?? DEFAULT_FIELD[stepName] ?? "";
   const reasonField = REASON_FIELD[stepName] ?? "";
 

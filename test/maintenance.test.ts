@@ -30,7 +30,11 @@ const IMPRESSION = JSON.stringify({
   summary: "Wants the answer first; follows up when the reasoning matters.",
 });
 const REACTION = (respond: boolean) =>
-  JSON.stringify({ reason: respond ? "asked me directly" : "not for me", respond });
+  JSON.stringify({
+    reason: respond ? "asked me directly" : "not for me",
+    verdict: respond ? "reply" : "for_someone_else",
+    interest: respond ? 0.9 : 0,
+  });
 const RESPONSE = JSON.stringify({ message: "Node 22 or newer." });
 const REVIEW = JSON.stringify({ assessment: "Fine.", quality: 4, recommendations: [] });
 

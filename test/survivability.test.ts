@@ -81,7 +81,7 @@ describe("salvaging a timed-out step", () => {
     return callModel({
       label: "test",
       host: server.host,
-      role: { name: "fast", model: "m", options: {}, noTools: false },
+      role: { name: "fast", model: "m", options: {}, noTools: false, exclusive: false },
       prompt: "p",
       schema,
       fallback: () => ({ reason: "fallback", respond: false }),
@@ -124,7 +124,7 @@ describe("salvaging a timed-out step", () => {
       callModel({
         label: "test",
         host: server.host,
-        role: { name: "fast", model: "qwen3.6:27b", options: {}, noTools: false },
+        role: { name: "fast", model: "qwen3.6:27b", options: {}, noTools: false, exclusive: false },
         prompt: "p",
         schema,
         fallback: () => ({ reason: "fallback", respond: false }),
@@ -188,7 +188,6 @@ describe("absorbed arrivals do not start their own session", () => {
       // session is doing means the session took the message on.
       verdict: "adjust",
       message: "Node 22 or newer.",
-      respond: true,
       finished: true,
       needs_fact: false,
       needs_thought: false,
@@ -235,7 +234,6 @@ describe("absorbed arrivals do not start their own session", () => {
       reason: "separate matter",
       verdict: "continue",
       message: "Node 22 or newer.",
-      respond: true,
     });
     // An `adjust` verdict queues the `adjust` step and then the reply again, so
     // the exact call count is not the point here — supply enough of the

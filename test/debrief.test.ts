@@ -23,7 +23,11 @@ import {
  */
 
 const REACTION = (respond: boolean) =>
-  JSON.stringify({ reason: respond ? "asked me" : "not for me", respond });
+  JSON.stringify({
+    reason: respond ? "asked me" : "not for me",
+    verdict: respond ? "reply" : "for_someone_else",
+    interest: respond ? 0.9 : 0,
+  });
 
 /**
  * The supervisor's `update` runs *concurrently* with the step it watches, so
@@ -33,6 +37,9 @@ const REACTION = (respond: boolean) =>
  */
 const RACE = JSON.stringify({
   reason: "still the same task",
+  // `update` reads `verdict` as its own enum and `react` reads it as *its* enum,
+  // so the two cannot share one field. This object is only ever served to
+  // `update`, `respond`, and `review`; `react` gets REACTION above.
   verdict: "continue",
   message: "Node 22 or newer.",
 });

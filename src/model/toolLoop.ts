@@ -68,13 +68,13 @@ export async function runToolLoop(req: ToolLoopRequest): Promise<ToolLoopResult>
     if (response.toolCalls.length === 0) {
       // The model answered instead of calling anything; the loop is done.
       if (response.content.trim() !== "") {
-        messages.push({ role: "assistant", content: response.content });
+        messages.push({ role: "agent", content: response.content });
       }
       return { calls, transcript: renderTranscript(calls), exhausted: false };
     }
 
     messages.push({
-      role: "assistant",
+      role: "agent",
       content: response.content,
       tool_calls: response.toolCalls,
     });

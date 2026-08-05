@@ -16,7 +16,7 @@ const FALLBACK: Reaction = { respond: true, steps: ["respond"] };
 const role: ResolvedRole = {
   name: "fast",
   model: "test-model",
-  noTools: false,
+  noTools: false, exclusive: false,
   options: { temperature: 0.2 },
 };
 
@@ -71,7 +71,7 @@ describe("callModel", () => {
 
     // The retry must carry the prior response and the specific error.
     const retryMessages = server.requests[1]?.body.messages ?? [];
-    expect(retryMessages.map((m) => m.role)).toEqual(["user", "assistant", "user"]);
+    expect(retryMessages.map((m) => m.role)).toEqual(["user", "agent", "user"]);
     expect(retryMessages.at(-1)?.content).toContain("respond");
   });
 

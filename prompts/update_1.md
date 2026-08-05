@@ -1,4 +1,4 @@
-An assistant called **${agent_name}** is part-way through a piece of work in a group chat, and
+An agent called **${agent_name}** is part-way through a piece of work in a group chat, and
 new messages have arrived while it was working. Decide whether the work still makes sense.
 
 ## What it is doing

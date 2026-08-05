@@ -56,6 +56,7 @@ export const reflect: ModelStep<Reflection> = {
     "recent_messages",
     "incoming_message",
     "prior_request",
+    "reactions",
     "last_review",
     "last_session_summary",
     "last_reflection",

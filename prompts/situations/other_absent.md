@@ -1,4 +1,4 @@
-This message names **${mentioned_other}**, and the assistant has not spoken in this
+This message names **${mentioned_other}**, and the agent has not spoken in this
 conversation.
 
 It belongs to them. The default is silence, and the default is almost always right here.

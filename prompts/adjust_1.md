@@ -1,4 +1,4 @@
-An assistant called **${agent_name}** is part-way through answering a message. Some preparatory
+An agent called **${agent_name}** is part-way through answering a message. Some preparatory
 work has finished, and something that arrived since suggests the remaining plan may no longer
 fit. Decide what should still happen before it replies.
 

@@ -13,6 +13,12 @@
     "exactOptionalPropertyTypes": true,
     "verbatimModuleSyntax": true,
 
+    // The daemon runs under Node's type stripping, which cannot generate code.
+    // Vitest transpiles through esbuild and accepts parameter properties, enums,
+    // and namespaces happily — so `npm test` passing is not proof the daemon
+    // starts. This makes the compiler refuse them instead.
+    "erasableSyntaxOnly": true,
+
     "allowImportingTsExtensions": true,
     "noEmit": true,
     "skipLibCheck": true,

@@ -23,7 +23,11 @@ import {
  */
 
 const REACTION = (respond: boolean) =>
-  JSON.stringify({ reason: respond ? "asked me directly" : "aimed at someone else", respond });
+  JSON.stringify({
+    reason: respond ? "asked me directly" : "aimed at someone else",
+    verdict: respond ? "reply" : "for_someone_else",
+    interest: respond ? 0.9 : 0,
+  });
 const REQUEST = JSON.stringify({
   reasoning: "\"it\" refers to the import script two messages back.",
   request: "Sketch an approach for the CSV import script, in TypeScript.",

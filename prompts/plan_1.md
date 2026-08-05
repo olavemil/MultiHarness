@@ -36,7 +36,7 @@ on, and the long tail will still be there in a month.
 
 ## Naming what the plan produces
 
-If the work will leave files behind, list them in `artifacts` — paths relative to the assistant's
+If the work will leave files behind, list them in `artifacts` — paths relative to the agent's
 own files area, like `notes/import-design.md`. They are how anyone tells later whether the plan
 actually moved: an item can be called done, but a file either exists and has grown or it has not.
 Progress on a plan that names files is measured from the files, not from the account of it.

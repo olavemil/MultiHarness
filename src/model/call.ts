@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { withModelLease } from "./lease.ts";
 import { chat, OllamaTimeout, type ChatMessage } from "./ollama.ts";
 import type { ResolvedRole } from "./roles.ts";
 
@@ -28,6 +29,8 @@ export interface CallAttempt {
   /** Parsed from a partial response after the call ran out of time. */
   salvagedFromTimeout?: boolean;
   durationMs: number;
+  /** Time spent queued behind another call on the same model. */
+  waitedMs: number;
   promptTokens: number;
   responseTokens: number;
 }
@@ -40,6 +43,12 @@ export interface CallTrace {
   /** True when both attempts failed validation and the default was used. */
   fellBack: boolean;
   durationMs: number;
+  /**
+   * Total time queued behind other calls on the same model. Excluded from the
+   * session's wallclock budget: waiting for a resource is not work, and charging
+   * it would let a busy machine silently shrink every session.
+   */
+  waitedMs: number;
   promptTokens: number;
   responseTokens: number;
 }
@@ -78,19 +87,29 @@ export async function callModel<T>(req: CallRequest<T>): Promise<CallResult<T>> 
 
   for (let attemptNo = 1; attemptNo <= MAX_ATTEMPTS; attemptNo++) {
     let response;
+    let waitedMs = 0;
     try {
-      response = await chat(
-      req.host,
-      {
+      // Queued here rather than inside ollama, so the deadline below starts when
+      // the call does. A call that waited three minutes for the weights has not
+      // used three minutes of its own timeout.
+      const request = {
         model: req.role.model,
         messages: [...messages],
         format,
         options: req.role.options,
         ...(req.role.keepAlive !== undefined ? { keepAlive: req.role.keepAlive } : {}),
         ...(req.role.think !== undefined ? { think: req.role.think } : {}),
-      },
-        { timeoutMs: req.timeoutMs, signal: req.signal, onDelta: req.onDelta },
-      );
+      };
+      const options = { timeoutMs: req.timeoutMs, signal: req.signal, onDelta: req.onDelta };
+
+      // Only the large weights queue. `fast` must stay concurrent: `update` runs
+      // alongside the step it supervises, and serialising the two would have the
+      // supervisor wait for the thing it is supervising.
+      const leased = req.role.exclusive
+        ? await withModelLease(req.role.model, () => chat(req.host, request, options), req.signal)
+        : { value: await chat(req.host, request, options), waitedMs: 0 };
+      response = leased.value;
+      waitedMs = leased.waitedMs;
     } catch (cause) {
       // A step that ran out of time having already written most of its answer is
       // not the same as a step that produced nothing. The partial is frequently
@@ -108,6 +127,7 @@ export async function callModel<T>(req: CallRequest<T>): Promise<CallResult<T>> 
         raw: cause.partialContent,
         thinking: cause.partialThinking,
         durationMs: req.timeoutMs,
+        waitedMs: 0,
         promptTokens: 0,
         responseTokens: 0,
         salvagedFromTimeout: true,
@@ -127,6 +147,7 @@ export async function callModel<T>(req: CallRequest<T>): Promise<CallResult<T>> 
       raw: response.content,
       thinking: response.thinking,
       durationMs: response.durationMs,
+      waitedMs,
       promptTokens: response.promptTokens,
       responseTokens: response.responseTokens,
       ...(validated.ok ? {} : { validationError: validated.error }),
@@ -141,7 +162,7 @@ export async function callModel<T>(req: CallRequest<T>): Promise<CallResult<T>> 
     }
 
     if (attemptNo < MAX_ATTEMPTS) {
-      messages.push({ role: "assistant", content: response.content });
+      messages.push({ role: "agent", content: response.content });
       messages.push({ role: "user", content: retryInstruction(validated.error) });
     }
   }
@@ -259,6 +280,7 @@ function buildTrace<T>(
     attempts,
     fellBack,
     durationMs: Date.now() - started,
+    waitedMs: attempts.reduce((sum, a) => sum + a.waitedMs, 0),
     promptTokens: attempts.reduce((sum, a) => sum + a.promptTokens, 0),
     responseTokens: attempts.reduce((sum, a) => sum + a.responseTokens, 0),
   };

@@ -1,4 +1,4 @@
-A transcript from a group chat is shown below, ending with a message that an assistant called
+A transcript from a group chat is shown below, ending with a message that an agent called
 **${agent_name}** is going to answer. That it will be answered is already settled and is not in
 question here.
 
@@ -43,7 +43,7 @@ different things were proposed, and the final message points back at "it" or "th
 saying which. Then report what is open instead of picking one, and do not answer both — a
 request covering two proposals is not what was asked either.
 
-A term the participants share and the assistant does not is **not** an open point. They know
+A term the participants share and the agent does not is **not** an open point. They know
 what it means; it is not ambiguous just because it is unfamiliar.
 
 ## Then: what the restatement is for
@@ -77,5 +77,5 @@ asking whether the transcript answered it.
 - `unresolved` — empty when `resolved` is `true`. Otherwise one entry per open point, each
   written as the question that would settle it.
 - `request` — the self-contained restatement, one paragraph at most, describing what is asked of
-  the assistant. When `resolved` is `false`, restate only the part that is settled and leave the
+  the agent. When `resolved` is `false`, restate only the part that is settled and leave the
   open points to the field above rather than covering every candidate.

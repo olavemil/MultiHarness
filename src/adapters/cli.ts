@@ -1,39 +1,44 @@
 import { randomUUID } from "node:crypto";
-import { createInterface, type Interface } from "node:readline";
+import { sharedConsole, type ConsoleIo } from "./console.ts";
 import type { Adapter } from "./types.ts";
 
 export interface CliAdapterOptions {
   channelId?: string;
   identityId?: string;
   displayName?: string;
+  /**
+   * Whose reply this is. Omitted for a lone agent, where the prefix would be
+   * noise; set to the instance name when several share the console, because
+   * otherwise two answers to the same line are indistinguishable.
+   */
+  label?: string;
+  /** The terminal to attach to. Defaults to the process's shared one. */
+  io?: ConsoleIo;
 }
 
-/** Stdin/stdout binding. Binds nothing to the network. */
+/**
+ * Stdin/stdout binding. Binds nothing to the network.
+ *
+ * The terminal itself belongs to `console.ts`, not to the adapter: several
+ * instances may attach to one console, and a `readline` each would give every
+ * line to all of them twice over and print a prompt per agent.
+ */
 export function createCliAdapter(opts: CliAdapterOptions = {}): Adapter {
   const channelId = opts.channelId ?? "cli";
   const identityId = opts.identityId ?? "operator";
   const displayName = opts.displayName ?? "operator";
+  const label = opts.label;
 
-  let rl: Interface | undefined;
-  let isClosed = false;
-  let markClosed: () => void;
-  const closed = new Promise<void>((resolve) => {
-    markClosed = resolve;
-  });
+  let io: ConsoleIo | undefined;
+  let unsubscribe: (() => void) | undefined;
+
+  const terminal = (): ConsoleIo => (io ??= opts.io ?? sharedConsole());
 
   return {
     id: "cli",
 
-    async start(onMessage) {
-      rl = createInterface({ input: process.stdin, output: process.stdout, prompt: "> " });
-      rl.prompt();
-
-      rl.on("line", (line) => {
-        const text = line.trim();
-        if (text === "") {
-          rl?.prompt();
-          return;
-        }
+    async start({ onMessage }) {
+      unsubscribe = terminal().subscribe((text) => {
         onMessage({
           id: randomUUID(),
           channelId,
@@ -43,29 +48,25 @@ export function createCliAdapter(opts: CliAdapterOptions = {}): Adapter {
           receivedAt: new Date().toISOString(),
         });
       });
-
-      rl.on("close", () => {
-        isClosed = true;
-        markClosed();
-      });
     },
 
-    closed: () => closed,
+    closed: () => terminal().closed(),
 
-    // A session that was still running when input ended must still be able to
-    // deliver its reply, so output stays valid after close — only the prompt
-    // goes away.
     async send(_channelId, text) {
-      process.stdout.write(`\n${text}\n\n`);
-      if (!isClosed) rl?.prompt();
+      terminal().write(label ? `\n${label}: ${text}\n\n` : `\n${text}\n\n`);
+      terminal().prompt();
     },
 
     status(_channelId, headline) {
-      process.stdout.write(`   · ${headline}\n`);
+      terminal().write(label ? `   · ${label}: ${headline}\n` : `   · ${headline}\n`);
     },
 
+    // Leaving the console is all this does. The console closes itself once the
+    // last instance has left, so one agent shutting down does not take the
+    // terminal away from the others.
     async stop() {
-      if (!isClosed) rl?.close();
+      unsubscribe?.();
+      unsubscribe = undefined;
     },
   };
 }

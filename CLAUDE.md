@@ -28,6 +28,24 @@ the whole thing — step, cause, stack, and the partial files — which was its 
 Restart the daemon after touching prompts, or accept that the running one is a different build
 from the one on disk.
 
+## A TOML table header ends the previous table
+
+`[session.continuation]` and `[session.maintenance]` were added *inside* the `[session]` block, so
+six plain keys written after them belonged to a sub-table instead. Zod strips unknown keys, so
+they vanished silently.
+
+**Five of the six had schema defaults identical to the file.** Only `reply_target` ever showed a
+symptom — it flipped to `false` and turned off a feature measured as worth having, which showed
+up as `late-reply-to-agent` scoring 1/3 and looking like a prompt regression. It was not.
+
+Two lessons, and the second is the general one:
+
+- Sub-tables belong at the **end** of their parent's block, which is where they now sit.
+- **A default that duplicates the config file hides the config file failing to load.** Every
+  value that matters is now asserted in `test/shippedConfig.test.ts` against what the file says,
+  not against what the schema would fall back to. That suite also checks the config names only
+  registered steps, grants only real tools, and binds every role it asks for.
+
 ## Everything ships enabled
 
 This is not a production system and has no external users to disappoint, so the default is **on**:
@@ -64,8 +82,9 @@ The daemon runs under Node's native type stripping — `node src/daemon.ts`, no 
 `tsx`. That imposes two rules: relative imports carry the `.ts` extension, and **no TypeScript
 syntax that needs code generation** — no parameter properties (`constructor(readonly x: T)`), no
 enums, no namespaces, no decorators. Vitest transpiles via esbuild and will happily accept all
-of those, so `npm test` passing is not proof the daemon starts. `npm run typecheck && npm test`,
-then actually run it.
+of those, so `npm test` passing is not proof the daemon starts. `tsconfig` now sets
+**`erasableSyntaxOnly`**, so the compiler refuses that syntax rather than leaving it to
+discipline. `npm run typecheck && npm test`, then actually run it.
 
 **The harness is a headless daemon.** It runs whether or not anything is displaying it —
 messages arrive at any hour, scheduled sessions fire, steps run for minutes. Nothing about the
@@ -158,9 +177,9 @@ you can tell which mechanism moved a result.
 **Prompt voice follows the model's job.** Steps doing substantial work on `reasoning`/`digest`
 — `respond`, `review`, `reflect` — are written in **second person**: they are the agent doing
 the work. Mechanical classification on `fast` — `react`, its `prompts/situations/` fragments,
-`reply_target` — is written in **neutral analyst voice**, referring to "the assistant" in the
+`reply_target` — is written in **neutral analyst voice**, referring to "the agent" in the
 third person and never addressing the model as a participant. These models are trained to read
-"you" as themselves-the-assistant-being-asked, so second person in a classification prompt makes
+"you" as themselves-the-agent-being-asked, so second person in a classification prompt makes
 them conflate "is this aimed at you, the channel participant" with "are you being asked this
 question". Injected variables follow the same rule as the file they land in.
 
@@ -307,8 +326,10 @@ measured defaults) → `$MULTIHARNESS_HOME/config.toml` (what makes this instanc
 `$MULTIHARNESS_CONFIG` (an explicit override, for experiments). `working_dir` defaults to the
 instance directory, so an instance is self-contained.
 
-With one instance the daemon finds it; with several it refuses to guess and asks for
-`MULTIHARNESS_HOME`. Starting the wrong agent is worse than not starting.
+**The daemon hosts all of them at once** — see "One process, every agent" below. `instanceHome()`
+survives as the single-agent entry point for scripts and evals, and still refuses to guess with
+several present, because a caller that asked for *the* instance would otherwise get the wrong
+agent.
 
 **`loadConfig` takes the instance directory as a parameter; tests and evals pass a nonexistent
 one.** Without it they read whatever agent is configured on the machine running them. This bit
@@ -326,7 +347,8 @@ everyone who addressed it.
 ```
 npm install
 npm run typecheck && npm test
-npm run dev            # CLI adapter; Ctrl-D to exit
+npm run dev            # every instance on this machine; Ctrl-D to exit
+npm run dev galatea    # just that one
 ```
 
 ```
@@ -671,7 +693,7 @@ unmeasured rather than failed, so the digest numbers are a partial comparison, n
 The conclusion survives because the cases it rests on — the two ambiguous ones — both completed.
 
 **One eval expectation was wrong and was corrected rather than tuned against.** A term the
-participants share and the assistant does not is *not* an open point: they know what "tier-2"
+participants share and the agent does not is *not* an open point: they know what "tier-2"
 means, and asking would be pedantry. `resolved-shared-jargon` now asserts `true` and encodes the
 distinction the prompt has to hold — unfamiliar is not ambiguous. Following the gatekeeper
 precedent: debatable calls get corrected, not encoded as truth.
@@ -681,17 +703,96 @@ precedent: debatable calls get corrected, not encoded as truth.
 `core/participation.ts`. Damps the agent's tendency to dominate a channel — a failure no
 per-message judgement can see, because each individual reply looks locally justified.
 
-`p = base × damping × followup × model`, where damping is `fairShare / agentShare` clamped:
-1.0 when the agent is talking its share, below 1 when over. Two-person channels land on 1.0
-naturally, so DMs need no special case. Being named is not a probability — it forces the reply,
-and no draw is taken. The model's verdict scales the odds (`×1.5` / `×0.5`); it can never turn a
-"no" into a reply.
+`p = base × damping × crowd × followup × model`. Being named is not a probability — it forces the
+reply and no draw is taken. The model's verdict scales the odds (`×1.5` / `×0.5`); it can never
+turn a "no" into a reply.
+
+**Two damping terms, doing different jobs.** `damping` is `fairShare / agentShare` clamped: 1.0
+when the agent is talking its share, below 1 when over. `crowd` is `2 / participants`, clamped at
+`crowd_min` and 1.
+
+The second exists because the first does not damp crowding, which is what it looks like it should
+do. `fairShare / agentShare` pins to its cap whenever the agent has said little, so a near-silent
+agent in a ten-person room was exactly as ready to speak as in a three-person one — and
+"comments on everyone else's single message" is a crowded-room failure specifically. Presence
+damping only bites once the agent is *already* talking; the crowd term bites from the start.
+
+Two participants gives `crowd = 1`, so a DM is unaffected and still needs no special case.
 
 **Off by default** (`[session.participation] enabled`). Turning it on makes the decision
 stochastic, which changes what `npm run eval` measures — run the suite with it disabled when
 judging a prompt change. Every factor, the probability, and the draw are written to
 `trace/participation.json`; a hidden RNG deciding whether the agent speaks would make "why
 didn't it answer me?" unanswerable.
+
+## What `react` returns
+
+Four outcomes rather than a boolean, plus `interest`.
+
+| verdict | meaning | what the harness does |
+|---|---|---|
+| `reply` | a written answer is wanted | `respond` runs |
+| `acknowledge` | addressed to the agent, wants nothing back | marks the message, no reply |
+| `for_someone_else` | aimed at another participant | nothing |
+| `tangent` | could have been answered, not worth it | nothing |
+
+**A boolean asked an agent's question.** "Was the agent addressed?" is the wrong question
+for a conversation partner: under it, somebody sharing a thought correctly produces silence, which
+is a real failure seen live. Four outcomes let the step say "this wants acknowledging" or "this is
+not mine" without collapsing both into "no".
+
+**`respond` is derived, never decoded.** `wantsReply()` is the single definition, used by the
+session *and* by the eval runner — a harness computing its own copy of that rule would be
+measuring its own copy, which is the drift this suite exists to catch. The 13 existing cases keep
+asserting the same decision unchanged.
+
+**The situation fragments are the authority, and that had to be said explicitly.** They are the
+tuned surface — the wording that took `bare-ack-immediate` from 1/5 to 5/5 — and they still ask a
+binary question. Widening the verdict set gave the model escape hatches from their conclusion:
+`open-question-recent` went to **0/3**, because an open question to the room reads as `tangent`
+just as well as `reply`. One added sentence — the situation settles whether a written answer is
+wanted, the four outcomes only spell out *how* silence is spelled — took it back to 3/3.
+
+**Measured after that: 13 pass · 0 unstable · 0 fail.**
+
+**`acknowledge` is not gated on participation.** An emoji is not a message, it does not crowd a
+channel, and damping it would leave the person with nothing at all — the outcome the verdict
+exists to avoid. Being damped into silence is recorded as `tangent` instead, which is honest: the
+step judged the message worth answering and the draw disagreed.
+
+**Interest replaced the boolean in participation.** `model` interpolates between
+`model_no_multiplier` and `model_yes_multiplier` rather than switching between them; a boolean
+threw away everything the step knew, since "barely worth saying" and "I have a real point" both
+arrived as `true`.
+
+## Reactions to the agent's own messages
+
+`store/reactionStore.ts`, the `reactions` block, and `reaction_added` / `reaction_removed` on the
+Slack adapter. Someone marking a reply is **the most direct evidence `reflect` ever gets** about
+how an answer landed — everything else it reads is prose it has to interpret.
+
+**Recorded, never queued.** A reaction is a signal, not a request. Running a session for a 👍
+would spend a whole pipeline concluding that nothing was asked, so it is appended and read by
+`reflect` at the start of the next real exchange.
+
+**Kept out of `history.jsonl`**, in `reactions.jsonl` beside it. A reaction is not a turn in the
+conversation: folding it in would have every step reading `recent_messages` treat an emoji as
+something somebody said, and would push real messages out of the window for no gain. Only
+`reflect` declares the block.
+
+**Only reactions on the agent's own messages.** Slack reports `item_user`, and one between two
+other people is a conversation the agent is not part of — treating it as evidence about its own
+answers would be reading somebody else's post.
+
+**A removal cancels the matching addition** rather than appearing as an entry of its own:
+somebody trying an emoji and thinking better of it says nothing about the answer. The append-only
+log keeps both records, so the retraction stays inspectable; it just is not presented as signal.
+
+**Needs `reactions:read` and the two event subscriptions.** Without them the handler simply never
+fires — visible under `MULTIHARNESS_DEBUG=1`, and silent otherwise.
+
+The prompt frames it as a signal rather than a verdict: a 👍 says the reply was received and
+welcome, not that it was right, and a single emoji carries far less than a sentence would.
 
 ## The reflection loop
 
@@ -775,6 +876,17 @@ nothing arriving means the bot is not in the channel or is not subscribed to `me
 Slack is the first surface where weighted participation has real multi-participant channels to
 run against, and it is now on.
 
+**Standing down rather than racing.** A message nobody addressed waits
+`interject_delay_ms`, jittered ±50%, before any work starts. Several agents in one room otherwise
+race: each decides independently and as fast as it can, so both answer before either sees the
+other. History is read *after* the wait, so `react` simply sees the question has been dealt with
+and declines — no coordination channel, no new judgement, and nothing that treats an agent
+differently from a person. The jitter matters: two instances with identical config would
+otherwise wake at the same moment and race exactly as before.
+
+Skipped when messages are queued behind it — the pause exists to let somebody else speak, and
+somebody else already has — and never applied to a message that named the agent.
+
 **Two instances are running side by side** — `galatea` and `nephele`, separate agent names,
 aliases, and `working_dir`s, one daemon each. They do not double-answer and their session
 numbering cannot collide, because an instance is a self-contained directory.
@@ -829,7 +941,7 @@ never has to pick steps it will not use.
 
 **A named message routes to `prompts/situations/named.md`, not to a positional fragment.** The
 six conversational-position fragments all reason about whether an *unaddressed* message is meant
-for the assistant; handing a named one to `other_absent` tells it the message belongs to someone
+for the agent; handing a named one to `other_absent` tells it the message belongs to someone
 else. The fast path used to hide this by short-circuiting before routing.
 
 There is no fetch tool, so "research" today means consulting the knowledge store and the model's
@@ -1144,6 +1256,18 @@ checked against its evidence, and append-only survives intact.
   one subject — the same call the gatekeeper suite deliberately declines to make.
 - **`knowledge` namespace only.** Identity impressions have their own synthesis step.
 
+**Anything touching a migrated column belongs after the migration.** An index over
+`superseded_by` was written into the schema block beside the table it extends. That block runs
+*before* `migrate()`, and on an existing store the `CREATE TABLE IF NOT EXISTS` above it is a
+no-op — so the index referenced a column that did not exist yet and threw, taking the whole
+session down with `no such column: superseded_by`. It only ever failed on a store written by an
+older build.
+
+**The suite could not have caught it**, and that is the more useful lesson: every knowledge test
+starts from `openMemoryDb`, which builds the current schema from scratch. A migration is by
+definition about databases that do *not* match the current schema, so it needs a test that
+constructs the old one deliberately. There is one now.
+
 **The threshold counts notes, not blocks**, and that distinction is load-bearing. A compacted
 entry has one live block; counting blocks let two new notes re-qualify it, because the earlier
 compaction made up the third — the threshold quietly halving on every pass after the first.
@@ -1281,6 +1405,103 @@ exchange, the second reasoning about the message with no idea the first was stil
 because every arrival got its own session regardless. Now consumption is the default and deferral
 is the exception that keeps one queued. The verdict is worth re-measuring; the case for removing
 it has gone.
+
+## One call at a time on the large weights
+
+`model/lease.ts`, and `exclusive = true` on `reasoning` and `digest`.
+
+**Two sessions reaching a `reasoning` step together do not get two models.** Ollama holds one copy
+of the weights and queues the requests behind each other — but they still look concurrent from
+here, so both deadlines run while only one call progresses, and both can time out having produced
+nothing. Waiting on this side turns an invisible queue into an explicit one.
+
+**Keyed by model id, not role name.** `reasoning` and `digest` are the same weights with thinking
+switched off; a lease per role would let them run concurrently and contend exactly as before.
+
+**`fast` is deliberately not exclusive.** `update` runs *alongside* the step it supervises, so
+serialising that role would have the supervisor wait for the thing it is supervising — the one
+arrangement the design forbids.
+
+**Waiting costs no budget.** `Budget.waitedMs` accumulates queued time and `workingMs` subtracts
+it from wallclock. A session that sat behind somebody else's research has not spent its own
+allowance, and charging it would let a busy machine silently shrink every session on it. The
+per-step deadline is unaffected for free, because the lease is taken *outside* `chat()` — the
+timeout starts when the call does.
+
+**The coordination is the more valuable half.** Two agents answering at the same moment after a
+long delay can neither see nor react to each other. Staggered, the second is a session whose
+`update` can see the first's answer and adjust or stand down — so serialising for throughput
+happens to buy the coordination item 4's deferral is separately reaching for.
+
+FIFO, so a busy channel cannot starve a quiet one and "whoever asked first answers first" holds.
+A call cancelled while queued leaves the queue rather than holding its place and then running work
+nobody wants.
+
+**Process-wide, and every agent is now in that process.** It began as a guarantee about the
+channels of one instance; the shared daemon below made it the cross-instance one, with no change
+to this file.
+
+## One process, every agent
+
+`daemon.ts`, `instance/`, `adapters/console.ts`. One daemon hosts every instance under
+`~/.multiharness/` instead of one process per agent.
+
+```
+npm run dev                 # all of them
+npm run dev galatea         # just that one; unknown names are an error naming what exists
+MULTIHARNESS_HOME=…         # still means exactly one agent
+```
+
+**The reason is the lease and nothing else.** `model/lease.ts` serialises calls per model id, but
+it could not reach across process boundaries — two daemons pointed at the same ollama contended
+invisibly and timed out together. Sharing a process is what makes the existing code the guarantee
+it was written to be. The roadmap's proposed cross-instance *queue* was never needed: the
+instances did not need a queue built for them, they needed to be in the same process.
+
+**Nothing else is shared, and that is the property to protect.** Separate config, working
+directory, stores, identities, and secrets. There is no guarantee two instances even connect to
+the same Slack workspace, so running them together is a resource decision — one machine, one set
+of pinned models — and nothing semantic follows from it. `startInstance` reaches everything
+through its own `config`, `paths`, `env`, and `log`; there is no module-level state and nothing is
+read from the environment after startup.
+
+**`process.loadEnvFile` was the concrete blocker.** It is global, so the second instance's `.env`
+overwrote the first's and both would have connected to Slack as whichever loaded last.
+`instance/env.ts` reads into a scoped object instead. **The file wins over the environment**,
+which inverts what `--env-file` does: with one process per agent, an exported `SLACK_BOT_TOKEN`
+was a convenient override; with several, that same export would apply to *every* instance and
+silently connect them all as one bot. Verified live — galatea and nephele connect as `U0BMTBXC59C`
+and `U0BMPF0A815` from one process.
+
+**One process is one blast radius.** An instance that cannot start is reported and skipped rather
+than taking the others down — a missing token is specific to one agent — and the per-channel
+drain's existing isolation covers a failed session. Ending the console's input ends the daemon;
+an all-Slack daemon runs until it is killed, because a Slack adapter's `closed()` only ever
+resolves from its own `stop()`.
+
+**Every line names its agent**, as `galatea [slack]: thinking`. With one process per agent the
+process *was* the label; with several, "which of them just failed a session?" is precisely the
+question the log exists to answer, and an unprefixed line cannot answer it.
+
+### The console is a room, and that surfaced a real bug
+
+Two `readline` interfaces on one stdin both receive every line and both print a prompt, so the
+terminal belongs to `adapters/console.ts` and the CLI adapters attach to it. A line typed there
+goes to *every* instance listening, each deciding on its own whether it was for them — the same
+arrangement as a Slack channel with two bots in it, which makes participation damping and standing
+down testable without a workspace. Measured: with two console instances and one open question,
+one answered and the other was damped into silence by its draw.
+
+**Attaching is passive; the daemon calls `ready()` once everyone has started.** Opening the reader
+on the first subscriber meant a piped message could be delivered before the second instance had
+finished starting — it never saw the line, ran no session, and **the log was indistinguishable
+from it having declined to answer**. It was read that way for one run. Interactive typing hides
+the race completely, which is why it needs a test rather than a look: `reads nothing until every
+instance has attached` fails against the old behaviour.
+
+That is the second time in this file that a *silence* has been misread as a decision, after
+`defer_to_session`. Silence is the one output with no evidence in it, so anything that can produce
+silence needs a way to tell its causes apart.
 
 ## Session budget
 

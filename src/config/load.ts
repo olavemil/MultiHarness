@@ -1,11 +1,10 @@
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { existsSync, readdirSync } from "node:fs";
-import { homedir } from "node:os";
 import path from "node:path";
 import { parse as parseToml } from "smol-toml";
 import { Config, PLACEHOLDER_MODEL } from "./schema.ts";
 import { deepMerge } from "./merge.ts";
+import { discoverInstances, instanceRoot, type InstanceRef } from "../instance/discover.ts";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -13,52 +12,28 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..
 export const DEFAULT_CONFIG_PATH = path.join(REPO_ROOT, "config", "default.toml");
 
 /**
- * The instance directory: one agent's config, knowledge, files, and sessions.
+ * The instance directory, when exactly one is meant.
  *
- * Everything that distinguishes one agent from another lives here, so a second
- * instance is `MULTIHARNESS_HOME=~/agents/other npm run dev` and nothing else.
+ * The daemon no longer goes through here — it hosts every instance and asks
+ * `discoverInstances` for all of them. This is the single-agent entry point that
+ * scripts and evals use, and it still refuses to guess: with several instances
+ * present, picking one for a caller that asked for "the" instance would run the
+ * wrong agent, which is worse than not running.
  */
 export function instanceHome(): string {
-  const configured = process.env["MULTIHARNESS_HOME"];
-  if (configured) return path.resolve(expandHome(configured));
-
-  const root = path.join(homedir(), ".multiharness");
-  // A config directly in the root is a single unnamed instance.
-  if (existsSync(path.join(root, "config.toml"))) return root;
-
-  // `npm run init` creates one directory per agent, named after the bot. With
-  // exactly one, there is nothing to disambiguate; with several, the daemon
-  // must be told which, because guessing would start the wrong agent.
-  const instances = readdirSafe(root).filter((entry) =>
-    existsSync(path.join(root, entry, "config.toml")),
-  );
-  if (instances.length === 1) return path.join(root, instances[0] as string);
-  if (instances.length > 1) {
+  const found = discoverInstances();
+  if (found.length === 1) return (found[0] as InstanceRef).home;
+  if (found.length > 1) {
     throw new Error(
-      `Several agent instances exist under ${root}: ${instances.join(", ")}. ` +
-        `Set MULTIHARNESS_HOME to the one you mean.`,
+      `Several agent instances exist under ${instanceRoot()}: ` +
+        `${found.map((ref) => ref.name).join(", ")}. Set MULTIHARNESS_HOME to the one you mean.`,
     );
   }
-  return root;
-}
-
-function readdirSafe(dir: string): string[] {
-  try {
-    return readdirSync(dir, { withFileTypes: true })
-      .filter((e) => e.isDirectory())
-      .map((e) => e.name);
-  } catch {
-    return [];
-  }
+  return instanceRoot();
 }
 
 export const instanceConfigPath = (home = instanceHome()): string =>
   path.join(home, "config.toml");
-
-function expandHome(target: string): string {
-  if (target === "~") return homedir();
-  return target.startsWith("~/") ? path.join(homedir(), target.slice(2)) : target;
-}
 
 /**
  * Layered, most general first:
@@ -82,6 +57,12 @@ export async function loadConfig(
    * that made the test suite depend on the developer's `~/.multiharness`.
    */
   home: string = instanceHome(),
+  /**
+   * Where placeholder warnings go. Several instances in one process each want
+   * their own name on the line, and `console.warn` cannot say which agent it
+   * meant.
+   */
+  warn: (message: string) => void = console.warn,
 ): Promise<Config> {
   let merged = parseToml(await readFile(DEFAULT_CONFIG_PATH, "utf8")) as Record<string, unknown>;
 
@@ -110,17 +91,17 @@ export async function loadConfig(
     throw new Error(`Invalid config (${sources}):\n${issues}`);
   }
 
-  warnOnPlaceholders(parsed.data);
+  warnOnPlaceholders(parsed.data, warn);
   return parsed.data;
 }
 
-function warnOnPlaceholders(config: Config): void {
+function warnOnPlaceholders(config: Config, warn: (message: string) => void): void {
   const unset = Object.entries(config.roles)
     .filter(([, role]) => role.model === PLACEHOLDER_MODEL)
     .map(([name]) => name);
 
   if (unset.length > 0) {
-    console.warn(
+    warn(
       `[config] roles still set to ${PLACEHOLDER_MODEL}: ${unset.join(", ")}. ` +
         `Set real ollama tags in config/default.toml or $MULTIHARNESS_CONFIG ` +
         `before running a step that uses them.`,

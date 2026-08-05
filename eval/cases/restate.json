@@ -155,7 +155,7 @@
     },
     {
       "id": "resolved-shared-jargon",
-      "note": "The correct call on a case that was initially expected the other way. A term the participants share and the assistant does not is not an open point: they know what \"tier-2\" means, and asking would be pedantry rather than clarification. Unfamiliar is not ambiguous — the distinction the prompt has to hold.",
+      "note": "The correct call on a case that was initially expected the other way. A term the participants share and the agent does not is not an open point: they know what \"tier-2\" means, and asking would be pedantry rather than clarification. Unfamiliar is not ambiguous — the distinction the prompt has to hold.",
       "history": [
         {
           "from": "kari",

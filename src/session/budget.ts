@@ -21,6 +21,15 @@ export interface Budget extends BudgetLimits {
   startedAt: number;
   modelCalls: number;
   toolCalls: number;
+  /**
+   * Time spent queued behind another session's call on the same model.
+   *
+   * Excluded from wallclock, because waiting for a resource is not work. A
+   * session that sat three minutes behind somebody else's `research` has not
+   * spent three minutes of its own allowance, and charging it would let a busy
+   * machine silently shrink every session on it.
+   */
+  waitedMs: number;
 }
 
 export const createBudget = (limits: BudgetLimits, startedAt = Date.now()): Budget => ({
@@ -28,6 +37,7 @@ export const createBudget = (limits: BudgetLimits, startedAt = Date.now()): Budg
   startedAt,
   modelCalls: 0,
   toolCalls: 0,
+  waitedMs: 0,
 });
 
 export interface BudgetState {
@@ -36,8 +46,12 @@ export interface BudgetState {
   reason?: string;
 }
 
+/** Wallclock the session actually spent working, with queueing taken out. */
+export const workingMs = (budget: Budget, now = Date.now()): number =>
+  Math.max(0, now - budget.startedAt - budget.waitedMs);
+
 export function checkBudget(budget: Budget, now = Date.now()): BudgetState {
-  const elapsed = now - budget.startedAt;
+  const elapsed = workingMs(budget, now);
   if (elapsed > budget.maxWallclockMs) {
     return { exhausted: true, reason: `wallclock ${Math.round(elapsed / 1000)}s exceeded` };
   }
@@ -52,7 +66,7 @@ export function checkBudget(budget: Budget, now = Date.now()): BudgetState {
 
 /** Remaining wallclock, so a step's own timeout never outlives the session. */
 export const remainingMs = (budget: Budget, now = Date.now()): number =>
-  Math.max(0, budget.maxWallclockMs - (now - budget.startedAt));
+  Math.max(0, budget.maxWallclockMs - workingMs(budget, now));
 
 /**
  * How much is left, phrased for a prompt.

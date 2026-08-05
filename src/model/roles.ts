@@ -8,6 +8,8 @@ export interface ResolvedRole {
   keepAlive?: number | string;
   think?: boolean;
   noTools: boolean;
+  /** One call at a time on this model. Keyed by model id, so roles sharing weights share a queue. */
+  exclusive: boolean;
   options: Record<string, OptionValue>;
 }
 
@@ -45,6 +47,7 @@ export function resolveRole(config: Config, roleName: string): ResolvedRole {
     ...(role.keep_alive !== undefined ? { keepAlive: role.keep_alive } : {}),
     ...(role.think !== undefined ? { think: role.think } : {}),
     noTools: role.no_tools,
+    exclusive: role.exclusive,
     options: role.options,
   };
 }

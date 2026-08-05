@@ -30,6 +30,28 @@ export interface InboundMessage {
   receivedAt: string;
 }
 
+/**
+ * Somebody reacted to a message the agent wrote.
+ *
+ * Deliberately *not* an `InboundMessage`. A reaction is a signal about how an
+ * answer landed, not a request — running a whole session for a 👍 would cost a
+ * pipeline to conclude that nothing was asked. It is recorded and read by
+ * `reflect`, which is the step whose entire job is judging how the last answer
+ * landed, and which until now had to infer that from prose.
+ */
+export interface InboundReaction {
+  channelId: string;
+  /** The agent message reacted to, as the adapter identifies it. */
+  messageId: string;
+  /** Emoji name without colons, e.g. `thumbsup`. */
+  emoji: string;
+  identityId: string;
+  authorName: string;
+  at: string;
+  /** True when the reaction was taken away again. */
+  removed: boolean;
+}
+
 /** A message as stored in a channel's history. */
 export interface ChannelMessage {
   id: string;

@@ -14,6 +14,17 @@ ${recent_messages}
 
 ${incoming_message}
 
+## What people put on the agent's own messages
+
+${reactions}
+
+A reaction is the most direct evidence there is about how an answer landed — everything else here
+is prose you have to interpret. Read it as a signal, not a verdict: a 👍 says the reply was
+received and welcome, not that it was right, and a single emoji carries far less than a sentence.
+
+An unhappy or puzzled reaction is worth as much as an approving one and should be read just as
+plainly. Nothing at all is the ordinary case and means nothing either way.
+
 ## What the last session took the question to mean
 
 ${prior_request}

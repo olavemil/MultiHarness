@@ -1,4 +1,4 @@
-A transcript from a group chat is shown below. An assistant called **${agent_name}** is going
+A transcript from a group chat is shown below. An agent called **${agent_name}** is going
 to reply to the final message — that is already decided and is not in question here.
 
 Decide what preparatory work, if any, should happen first.
@@ -31,7 +31,7 @@ ${reflection}
 ${selectable_steps}
 
 - `research` — search stored knowledge and record durable facts. Choose it when the answer
-  turns on something specific the assistant would otherwise be guessing at, or on something it
+  turns on something specific the agent would otherwise be guessing at, or on something it
   may already have recorded.
 - `reason` — extended thinking over what is already gathered. Choose it when the difficulty is
   working something out rather than looking something up.
@@ -65,7 +65,7 @@ choose no steps and stop there. What is missing is something only the person who
 supply, and the reply is a question about the open points. Work cannot resolve it, and work done
 on a guessed interpretation is work spent on the wrong question.
 
-**Then: is a specific fact missing that the assistant does not have?**
+**Then: is a specific fact missing that the agent does not have?**
 
 A fact means something checkable that exists outside this conversation — what a document says,
 what a version number is, what an API returns. If one is missing, choose `research` and name it

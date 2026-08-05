@@ -32,6 +32,10 @@ request_timeout_ms = 300000
 [roles.fast]
 model = "phi4:latest"
 keep_alive = -1
+# Deliberately not exclusive. `update` runs *alongside* the step it supervises,
+# so serialising this role would have the supervisor wait for the thing it is
+# supervising — the one arrangement the whole design forbids.
+exclusive = false
 [roles.fast.options]
 temperature = 0.2
 num_ctx = 8192
@@ -42,6 +46,15 @@ num_ctx = 8192
 [roles.reasoning]
 model = "qwen3.6:27b"
 keep_alive = -1
+# One call at a time on these weights. Two sessions reaching a reasoning step
+# together do not get two models — ollama queues them behind each other — so
+# both deadlines run while only one call progresses, and both can time out.
+# Waiting on our side makes the queue explicit, keeps it out of the timeout, and
+# staggers the answers so the second session's `update` can see the first.
+#
+# The lease is keyed by *model id*, so `digest` below shares this queue: it is
+# the same weights with thinking off.
+exclusive = true
 [roles.reasoning.options]
 temperature = 0.7
 num_ctx = 16384
@@ -54,6 +67,8 @@ num_ctx = 16384
 model = "qwen3.6:27b"
 think = false
 no_tools = true
+# Same weights as `reasoning`, so the same queue — see above.
+exclusive = true
 [roles.digest.options]
 temperature = 0.4
 num_ctx = 16384
@@ -126,25 +141,12 @@ debrief_step = "debrief"
 # whose output the harness applies to channels/<id>/plans/ — no tool can write a
 # plan, so a step cannot revise one on its own authority. Set "" to disable.
 plan_step = "plan"
-# --- Continued work ----------------------------------------------------------
-# After a reply goes out, carry on with whatever the plan still has outstanding.
-# One iteration at a time, each a full session of its own — the session is the
-# unit of budget, tracing and sealed output, and a session that ran for an hour
-# would break all three.
-#
-# Every gate is countable and none is asked of a model: a reply actually went
-# out, a plan is running with items left, nothing is queued for the channel, the
-# last iteration closed at least one item, and the cap is not reached. Progress
-# is the difference between two plan revisions, so "have I made progress?" —
-# the question a model always answers yes to — is never asked.
-#
-# `respond` is refused here whatever `steps` says. A continuation reports by
-# closing the plan, and its `changed` line is the report.
-
-[session.continuation]
-enabled = true
-steps = ["reason"]
-max_iterations = 3
+# --- Sub-tables of [session] -------------------------------------------------
+# Kept at the end of the session block on purpose. A TOML table header ends the
+# previous table's scope, so a plain `key = value` written after one of these
+# belongs to *it*, not to [session]. That silently dropped six keys — five of
+# which had schema defaults identical to the file, so only `reply_target` ever
+# showed a symptom.
 
 max_wallclock_ms = 900000
 # Wallclock alone never bounded anything: it is checked between steps, so one
@@ -169,6 +171,36 @@ reply_target = true
 # into their summary every N of them. Lower is more responsive and more prone to
 # mistaking one exchange for a pattern.
 impression_threshold = 5
+# What the agent marks a message with when `react` decides an acknowledgement is
+# wanted and a written reply is not — "thanks", a decision reported, anything
+# addressed to it that wants nothing back.
+#
+# Silence is the worst outcome, especially one-to-one where it is
+# indistinguishable from the daemon being down. Fixed rather than model-chosen:
+# predictable, never embarrassing in front of a channel, and no extra call.
+# Needs the `reactions:write` scope on Slack. Empty means stay silent.
+acknowledge_emoji = "+1"
+
+# --- Continued work ----------------------------------------------------------
+# After a reply goes out, carry on with whatever the plan still has outstanding.
+# One iteration at a time, each a full session of its own — the session is the
+# unit of budget, tracing and sealed output, and a session that ran for an hour
+# would break all three.
+#
+# Every gate is countable and none is asked of a model: a reply actually went
+# out, a plan is running with items left, nothing is queued for the channel, the
+# last iteration closed at least one item, and the cap is not reached. Progress
+# is the difference between two plan revisions, so "have I made progress?" —
+# the question a model always answers yes to — is never asked.
+#
+# `respond` is refused here whatever `steps` says. A continuation reports by
+# closing the plan, and its `changed` line is the report.
+
+[session.continuation]
+enabled = true
+steps = ["reason"]
+max_iterations = 3
+
 
 # --- Maintenance sessions (the sleep phase) ----------------------------------
 # Sessions with no incoming message, run when a channel has gone quiet.
@@ -395,4 +427,21 @@ presence_window = 12
 participant_window = 24
 damping_min = 0.25
 damping_max = 2.0
+# Room-size damping, separate from presence damping and doing a job presence
+# damping does not: `fairShare / agentShare` pins to its cap whenever the agent
+# has said little, so without this a near-silent agent in a ten-person room is
+# exactly as ready to speak as in a three-person one. `2 / participants`, so a
+# two-person channel is unaffected and DMs still need no special case.
+crowd_min = 0.2
+# Pause before working on a message nobody addressed, jittered by ±50%.
+#
+# Several agents in one room otherwise race: each decides independently and as
+# fast as it can, so both answer before either sees the other. Waiting lets
+# anyone else answer first — sibling instance or person alike, and the agent
+# never learns which — and history is read after the wait, so `react` simply
+# sees the question has been dealt with and declines.
+#
+# Skipped when messages are queued behind this one, and never applied to a
+# message that named the agent. 0 disables it.
+interject_delay_ms = 4000
 max = 1.0

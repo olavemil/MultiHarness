@@ -12,6 +12,7 @@ import { messageWindow } from "./messageWindow.ts";
 import { midSessionMessages } from "./midSessionMessages.ts";
 import { priorRequest } from "./priorRequest.ts";
 import { priorStepOutput } from "./priorStepOutput.ts";
+import { reactions } from "./reactions.ts";
 import { recentMessages } from "./recentMessages.ts";
 import { request } from "./request.ts";
 import { requestCorrection } from "./requestCorrection.ts";
@@ -35,6 +36,7 @@ const ALL: readonly ContextBlock[] = [
   lastSessionSummary,
   lastReflection,
   lastDebrief,
+  reactions,
   currentPlan,
   reflection,
   identityImpressions,

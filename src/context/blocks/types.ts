@@ -1,5 +1,6 @@
 import type { ChannelMessage, CompletedStep, Identity, InboundMessage } from "../../core/types.ts";
 import type { Plan } from "../../store/planStore.ts";
+import type { StoredReaction } from "../../store/reactionStore.ts";
 import type { PriorSession } from "../../store/priorSession.ts";
 import type { KeepEnd } from "../budget.ts";
 
@@ -22,6 +23,12 @@ export interface BlockInput {
    * fulfilled or abandoned, so a closed plan stops reaching any step.
    */
   plan?: Plan | undefined;
+  /**
+   * Reactions standing on the agent's own recent messages. The most direct
+   * evidence available about how an answer landed, and cheap for a person to
+   * send — but only `reflect` reads them.
+   */
+  reactions?: readonly StoredReaction[] | undefined;
   /** Accumulated impressions of `identity`, oldest first. */
   impressions?: readonly { text: string }[] | undefined;
   /**
