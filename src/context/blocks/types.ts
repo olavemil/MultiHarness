@@ -1,4 +1,5 @@
 import type { ChannelMessage, CompletedStep, Identity, InboundMessage } from "../../core/types.ts";
+import type { Plan } from "../../store/planStore.ts";
 import type { PriorSession } from "../../store/priorSession.ts";
 import type { KeepEnd } from "../budget.ts";
 
@@ -16,6 +17,11 @@ export interface BlockInput {
   completed: readonly CompletedStep[];
   /** The previous session in this channel. Absent on the first one. */
   prior?: PriorSession | undefined;
+  /**
+   * The channel's durable plan, when one is running. Absent once it is
+   * fulfilled or abandoned, so a closed plan stops reaching any step.
+   */
+  plan?: Plan | undefined;
   /** Accumulated impressions of `identity`, oldest first. */
   impressions?: readonly { text: string }[] | undefined;
   /**

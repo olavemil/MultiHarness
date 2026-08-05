@@ -184,14 +184,21 @@ describe("absorbed arrivals do not start their own session", () => {
     const { dir, cleanup } = await tempWorkingDir();
     const RACE = JSON.stringify({
       reason: "same task",
-      verdict: "continue",
+      // `adjust` rather than `continue`: only a verdict that changes what the
+      // session is doing means the session took the message on.
+      verdict: "adjust",
       message: "Node 22 or newer.",
       respond: true,
+      finished: true,
+      needs_fact: false,
+      needs_thought: false,
+      steps: [],
     });
+    // An `adjust` verdict queues the `adjust` step and then the reply again, so
+    // the exact call count is not the point here — supply enough of the
+    // combined reply that the sequence cannot run short.
     const server = await mockOllama([
-      reply(RACE),
-      reply(RACE),
-      reply(RACE),
+      ...Array.from({ length: 8 }, () => reply(RACE)),
       reply(JSON.stringify({ assessment: "ok", quality: 4, recommendations: [] })),
       reply(JSON.stringify({ assessment: "ok", unanswered: [], carry_forward: "" })),
     ]);
@@ -216,22 +223,25 @@ describe("absorbed arrivals do not start their own session", () => {
     // 000006/000007 live: this message used to open a session of its own while
     // the first was still running.
     expect(result.consumed).toEqual(["m2"]);
-    expect(result.deferred).toBeUndefined();
   });
 
-  it("leaves a deferred arrival unconsumed, which is what makes deferral an action", async () => {
+  it("leaves an arrival it merely carried on past unconsumed", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const { dir, cleanup } = await tempWorkingDir();
+    // `continue` says "this step is still the right step" — nothing about
+    // having dealt with the message. Consuming on it dropped unrelated
+    // arrivals silently, which is what the `separate-matter` eval case caught.
     const RACE = JSON.stringify({
       reason: "separate matter",
-      verdict: "defer_to_session",
+      verdict: "continue",
       message: "Node 22 or newer.",
       respond: true,
     });
+    // An `adjust` verdict queues the `adjust` step and then the reply again, so
+    // the exact call count is not the point here — supply enough of the
+    // combined reply that the sequence cannot run short.
     const server = await mockOllama([
-      reply(RACE),
-      reply(RACE),
-      reply(RACE),
+      ...Array.from({ length: 8 }, () => reply(RACE)),
       reply(JSON.stringify({ assessment: "ok", quality: 4, recommendations: [] })),
       reply(JSON.stringify({ assessment: "ok", unanswered: [], carry_forward: "" })),
     ]);
@@ -254,7 +264,6 @@ describe("absorbed arrivals do not start their own session", () => {
     });
     warn.mockRestore();
 
-    expect(result.deferred?.map((d) => d.id)).toEqual(["m3"]);
     expect(result.consumed ?? []).not.toContain("m3");
   });
 });

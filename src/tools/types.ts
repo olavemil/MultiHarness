@@ -7,6 +7,10 @@ export interface ToolContext {
   config: Config;
   /** Opened lazily: a step with no knowledge tools never touches sqlite. */
   knowledge(): DatabaseSync;
+  /** The agent's own sandbox directory. Every file path is resolved against it. */
+  files: string;
+  /** Sealed session output, for reading what earlier sessions concluded. */
+  sessions: string;
   session: string;
   step: string;
 }

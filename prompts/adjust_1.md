@@ -6,6 +6,13 @@ fit. Decide what should still happen before it replies.
 
 ${incoming_message}
 
+## What arrived while the work was running
+
+${mid_session_messages}
+
+This is the reason this step is being asked at all. Whether anything more should happen turns on
+what is *here* — not on what the original task left incomplete.
+
 ## Recent messages in this channel
 
 ${recent_messages}
@@ -51,16 +58,26 @@ already failed at.
 
 ## Only if the work is genuinely unfinished
 
-Add a step when the *new* information — not the old task — has opened a specific gap you can
+Add a step when the message that arrived — not the old task — has opened a specific gap you can
 name in one line, and the budget can cover it. A gap you cannot name is not a gap.
+
+**The test is whether the arrival changed the question.** A message that narrows what is wanted,
+or asks about something the finished work does not cover, opens a gap. A message that comments,
+agrees, thanks, or restates does not — however incomplete the earlier work looks. Incompleteness
+in the finished work is not a reason to add a step; that work already tried.
 
 ## Output
 
 Return JSON only, with the fields in this order. `finished` decides the steps: settle whether
 anything remains before naming anything to do.
 
-- `reason` — one sentence on what the finished work leaves outstanding, if anything.
+- `reason` — one sentence on what the arrival leaves outstanding, if anything.
 - `finished` — `true` when the work above is enough to reply from, including when a search came
   up empty or the budget is spent. **This is the common answer.**
-- `steps` — **must be empty when `finished` is true.** Otherwise the one or two steps that close
-  the specific gap you named.
+- `needs_fact` — only when `finished` is false: is something *checkable* missing, that exists
+  outside this conversation? A version number, what a document says, what an API returns.
+- `needs_thought` — only when `finished` is false: is the difficulty working something out from
+  what is already gathered? Weighing it up, following a consequence through, judging whether
+  something holds. **A question about what the gathered facts imply is this, not a fact.**
+- `steps` — **must be empty when `finished` is true.** Otherwise follow from the two booleans:
+  `needs_fact` → `research`, `needs_thought` → `reason`. Not both unless both are genuinely true.

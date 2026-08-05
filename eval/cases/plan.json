@@ -1,0 +1,186 @@
+{
+  "step": "plan",
+  "note": "A plan is a commitment later sessions act on unprompted, so the two failure modes are opposite and both bad: a plan that never closes becomes a standing instruction the agent cannot escape, and a plan closed early drops work somebody asked for. Most cases here test closing in one direction or the other. `outstanding` items must be things that can be *finished* — 'consider performance' sits in a plan forever.",
+  "cases": [
+    {
+      "id": "opens-a-plan-for-sustained-work",
+      "note": "Explicitly multi-session work. This is what plans are for.",
+      "history": [
+        {
+          "from": "olav",
+          "text": "the CSV importer is going to take a few sittings"
+        }
+      ],
+      "message": {
+        "from": "olav",
+        "text": "harness, let's start on it — schema mapping first, then the upsert path, then backfill the old rows"
+      },
+      "field": "status",
+      "expect": "active"
+    },
+    {
+      "id": "lists-finishable-items",
+      "note": "Three concrete pieces of work were named. They should survive into the plan as items.",
+      "history": [
+        {
+          "from": "olav",
+          "text": "the CSV importer is going to take a few sittings"
+        }
+      ],
+      "message": {
+        "from": "olav",
+        "text": "harness, let's start on it — schema mapping first, then the upsert path, then backfill the old rows"
+      },
+      "field": "outstanding",
+      "mode": "includes",
+      "expect": "upsert"
+    },
+    {
+      "id": "closes-a-finished-plan",
+      "note": "The work is done and the person says so. A plan nothing can close is read into every future session forever.",
+      "history": [
+        {
+          "from": "agent",
+          "text": "Backfill is running now."
+        },
+        {
+          "from": "olav",
+          "text": "it finished — 1.2M rows, no errors"
+        }
+      ],
+      "message": {
+        "from": "olav",
+        "text": "harness, that's the importer done then, nothing else outstanding"
+      },
+      "field": "status",
+      "expect": "fulfilled",
+      "plan": {
+        "goal": "Build the CSV importer",
+        "outstanding": [
+          "Backfill the old rows"
+        ]
+      }
+    },
+    {
+      "id": "empties-outstanding-when-fulfilled",
+      "note": "A fulfilled plan with items left is a contradiction the next session would act on.",
+      "history": [
+        {
+          "from": "agent",
+          "text": "Backfill is running now."
+        },
+        {
+          "from": "olav",
+          "text": "it finished — 1.2M rows, no errors"
+        }
+      ],
+      "message": {
+        "from": "olav",
+        "text": "harness, that's the importer done then, nothing else outstanding"
+      },
+      "field": "outstanding",
+      "mode": "empty",
+      "plan": {
+        "goal": "Build the CSV importer",
+        "outstanding": [
+          "Backfill the old rows"
+        ]
+      }
+    },
+    {
+      "id": "abandons-a-plan-overtaken",
+      "note": "The goal is no longer wanted. Abandoning is a good outcome, not a failure to report — pursuing it to exhaustion would be the failure.",
+      "history": [
+        {
+          "from": "kari",
+          "text": "the vendor is giving us a direct database feed after all"
+        }
+      ],
+      "message": {
+        "from": "olav",
+        "text": "harness, so we don't need the CSV importer at all — drop it"
+      },
+      "field": "status",
+      "expect": "abandoned",
+      "plan": {
+        "goal": "Build the CSV importer",
+        "outstanding": [
+          "Design the schema mapping",
+          "Write the upsert path"
+        ]
+      }
+    },
+    {
+      "id": "keeps-a-plan-with-work-left",
+      "note": "Progress is not completion. Closing here would drop work somebody asked for.",
+      "history": [
+        {
+          "from": "agent",
+          "text": "The schema mapping is done."
+        }
+      ],
+      "message": {
+        "from": "olav",
+        "text": "harness, good — that's the mapping sorted, carry on"
+      },
+      "field": "status",
+      "expect": "active",
+      "plan": {
+        "goal": "Build the CSV importer",
+        "outstanding": [
+          "Design the schema mapping",
+          "Write the upsert path",
+          "Backfill the old rows"
+        ]
+      }
+    },
+    {
+      "id": "carries-remaining-items-forward",
+      "note": "One item finished, two left. Dropping one silently is how work disappears with nothing to point at.",
+      "history": [
+        {
+          "from": "agent",
+          "text": "The schema mapping is done."
+        }
+      ],
+      "message": {
+        "from": "olav",
+        "text": "harness, good — that's the mapping sorted, carry on"
+      },
+      "field": "outstanding",
+      "mode": "includes",
+      "expect": "backfill",
+      "plan": {
+        "goal": "Build the CSV importer",
+        "outstanding": [
+          "Design the schema mapping",
+          "Write the upsert path",
+          "Backfill the old rows"
+        ]
+      }
+    },
+    {
+      "id": "records-what-changed",
+      "note": "The only place the reasoning behind a revision survives. Revisions are kept, so a plan that wandered can be traced through them — but only if each says why.",
+      "history": [
+        {
+          "from": "agent",
+          "text": "The schema mapping is done."
+        }
+      ],
+      "message": {
+        "from": "olav",
+        "text": "harness, good — that's the mapping sorted, carry on"
+      },
+      "field": "changed",
+      "mode": "nonempty",
+      "plan": {
+        "goal": "Build the CSV importer",
+        "outstanding": [
+          "Design the schema mapping",
+          "Write the upsert path"
+        ]
+      }
+    }
+  ]
+}

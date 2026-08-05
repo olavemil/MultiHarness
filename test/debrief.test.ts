@@ -122,9 +122,10 @@ describe("debrief", () => {
     expect(await read(result.session.dir, "debrief.md")).toContain("Why that version rather than");
   });
 
-  it("records a `continue` arrival too, which is the one most likely to be lost", async () => {
-    // A message the session decided to carry on past gets no further attention
-    // anywhere. If the debrief cannot see it, nothing can.
+  it("records an arrival it carried past, and says it stays queued", async () => {
+    // The verdict is spelled out rather than named, because the name does not
+    // say the thing that matters: whether *this* session took the message on.
+    // Reporting a still-queued message as unanswered raised a stale alarm live.
     const { server } = await run(
       [
         reply(REACTION(true)),
@@ -138,7 +139,7 @@ describe("debrief", () => {
 
     const debriefPrompt = server.requests[4]?.body.messages?.[0]?.content ?? "";
     expect(debriefPrompt).toContain("separately — is staging up?");
-    expect(debriefPrompt).toContain("continue");
+    expect(debriefPrompt).toContain("gets a session of its own");
   });
 
   it("is disabled by an empty step name", async () => {

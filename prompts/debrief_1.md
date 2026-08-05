@@ -33,8 +33,15 @@ Check each arriving message against what the session produced. An arrival is ans
 session's output actually addresses it — not merely if the session was aware of it. Being
 noticed and being answered are different things, and the gap between them is what to report.
 
-Some arrivals need no answer, and those are not omissions:
+Some arrivals need no answer from *this* session, and those are not omissions:
 
+- **Anything left for a session of its own.** The record above says so for each message. A
+  session that carried on past an arrival, or stopped because of one, did not take it on — it is
+  still queued and will be answered there. Reporting it here raises an alarm about a message
+  already in hand, and the note is stale before anyone reads it.
+
+Judge as unanswered only what this session **took on**: the messages it re-scheduled around or
+cut its work short to reply to. Those are the ones nothing else will pick up.
 - A remark between two other people.
 - An acknowledgement, or a thank-you.
 - A comment on something already covered by what the session produced.

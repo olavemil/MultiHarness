@@ -17,6 +17,13 @@ import { computeSituation } from "../core/situation.ts";
 import { drawParticipation, responseProbability } from "../core/participation.ts";
 import { resolveReplyTarget } from "./replyTarget.ts";
 import { loadPriorSession, recordLastSession, type PriorSession } from "../store/priorSession.ts";
+import {
+  loadPlan,
+  snapshotArtifacts,
+  writePlanRevision,
+  type Plan,
+} from "../store/planStore.ts";
+import { progressBetween, type ProgressDelta } from "./continuation.ts";
 import { prepareModelStep } from "./prepareStep.ts";
 import { runUpdate, type UpdateVerdict } from "./update.ts";
 import {
@@ -33,6 +40,7 @@ import type { Reaction } from "../steps/react.ts";
 import type { Reflection } from "../steps/reflect.ts";
 import type { Impression } from "../steps/impression.ts";
 import type { Compaction } from "../steps/compact.ts";
+import type { PlanRevision } from "../steps/plan.ts";
 import { saveIdentity } from "../store/identityStore.ts";
 import type { Adjustment } from "../steps/adjust.ts";
 import type { Schedule } from "../steps/schedule.ts";
@@ -54,6 +62,8 @@ export interface RunSessionOptions {
   promptsDir?: string | undefined;
   /** Overrides the stored prior session; injectable for tests. */
   prior?: PriorSession | undefined;
+  /** Overrides the stored plan; injectable for tests. */
+  plan?: Plan | undefined;
   /** Injectable so prompt-variant selection is deterministic under test. */
   rng?: (() => number) | undefined;
   signal?: AbortSignal | undefined;
@@ -85,12 +95,6 @@ export interface SessionResult {
   /** Non-`continue` supervisor verdicts, in the order they were applied. */
   supervisorVerdicts?: { step: string; verdict: UpdateVerdict }[];
   /**
-   * Arrivals judged to need their own session. The daemon leaves these in the
-   * inbox, so they open a session of their own — which is what makes
-   * `defer_to_session` an action rather than a note.
-   */
-  deferred?: { id: string; text: string }[];
-  /**
    * Arrivals this session took into account and the daemon should therefore not
    * open a new session for.
    *
@@ -100,6 +104,10 @@ export interface SessionResult {
    * live as `galatea/000006`/`000007`.
    */
   consumed?: string[];
+  /** What a continuation iteration achieved. Counted, never judged. */
+  progress?: ProgressDelta;
+  /** The plan as it stands after this session, when one is still running. */
+  plan?: Plan;
 }
 
 /**
@@ -115,6 +123,9 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
   const channelId = trigger.channelId;
   const message = triggeringMessage(trigger);
   const maintenance = trigger.kind === "maintenance";
+  const continuation = trigger.kind === "continuation";
+  /** Neither speaks to the channel on its own account. */
+  const unattended = maintenance || continuation;
 
   const session = await createSession(paths);
   const completed: CompletedStep[] = [];
@@ -124,10 +135,22 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
   const prior: PriorSession | undefined =
     opts.prior ?? (await loadPriorSession(paths, channelId));
 
+  // The durable plan, if one is running here. Absent once fulfilled or
+  // abandoned, so a closed plan stops reaching any step at all.
+  let plan: Plan | undefined = opts.plan ?? (await loadPlan(paths, channelId));
+
   // A maintenance session has nothing to react to and nobody waiting, so it
   // skips the entry step entirely and runs a fixed queue. There is no decision
   // for a model to make about whether to reply: it may not.
-  const queue: { name: string; topic: string }[] = maintenance
+  const queue: { name: string; topic: string }[] = continuation
+    ? // Work, then revise the plan. The revision is what makes progress
+      // countable: an iteration that closed nothing did not progress, whatever
+      // it would have said about itself.
+      [
+        ...config.session.continuation.steps.map((name) => ({ name, topic: trigger.reason })),
+        ...(config.session.plan_step ? [{ name: config.session.plan_step, topic: trigger.reason }] : []),
+      ].filter((item) => item.name !== config.session.respond_step)
+    : maintenance
     ? (trigger.steps ?? config.session.maintenance.steps)
         // Refused here rather than trusted to config, and refused at queue
         // construction rather than at dispatch: skipping mid-loop would also
@@ -153,8 +176,6 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
   let budgetStop: string | undefined;
   const supervisorVerdicts: { step: string; verdict: UpdateVerdict }[] = [];
   let adjusted = false;
-  /** Arrivals the supervisor marked as owed their own answer. */
-  const deferred: { id: string; text: string }[] = [];
   /**
    * Messages the supervisor has already ruled on. Without this it re-judges the
    * same arrivals at every step boundary — seven `fast` calls for one message
@@ -250,6 +271,9 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
     queue.push({ name: "summarize", topic: "" });
   }
 
+  /** The plan as it stood before this session touched it, for the delta. */
+  const planBefore = plan;
+
   const blockInput = (): BlockInput => ({
     message,
     history,
@@ -259,6 +283,7 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
     impressions,
     requestCorrection,
     arrivals,
+    plan,
     ...(compactionTarget
       ? { compactionTarget: { topic: compactionTarget.topic, blocks: compactionTarget.blocks } }
       : {}),
@@ -343,16 +368,14 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
       update.status === "fulfilled" ? update.value?.verdict : undefined;
     // Deferral is what the inbox does anyway; recording it is the whole
     // implementation, so an owed answer is visible rather than merely queued.
-    if (verdict === "defer_to_session") {
-      for (const m of pending) {
-        deferred.push({ id: m.id, text: m.text });
-        // Explicitly *not* consumed: deferral's whole meaning is that this one
-        // gets a session to itself. Now that consumption is the default, the
-        // verdict finally names a distinct action — which is what it lacked
-        // when it measured 0/3 against `continue`.
-        consumedIds.delete(m.id);
-      }
-    } else if (supervised) {
+    // Consumed only when the session *acted on* the arrival.
+    //
+    // `continue` means "this step is still the right step". It says nothing
+    // about the message having been dealt with, so consuming on it silently
+    // dropped anything unrelated — the message left the inbox and no session
+    // ever answered it. Measured: `separate-matter` returns `continue` 3/3,
+    // correctly, and under the old rule that lost the message.
+    if (supervised && (verdict === "adjust" || verdict === "respond_now")) {
       for (const m of pending) consumedIds.add(m.id);
     }
 
@@ -372,6 +395,20 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
 
     completed.push(outcome.completed);
 
+    // Recorded *before* the verdicts are applied, and that ordering is
+    // load-bearing. Both `respond_now` and `adjust` are guarded on
+    // `reply === undefined`, meaning "do not re-plan after the reply has gone
+    // out" — but when the step that just finished *was* `respond`, setting the
+    // reply afterwards left both guards reading a stale `undefined`. The
+    // session then queued `respond` a second time, and because sealed output is
+    // chmod 444 the second seal failed with EACCES rather than merely wasting a
+    // call.
+    if (step.name === config.session.respond_step) {
+      reply = (outcome.value as StepResponse).message;
+      // Handed over now: the closing steps are retrospection and run behind it.
+      await opts.onReply?.(reply);
+    }
+
     // `respond_now` cuts the remaining work and goes straight to the reply.
     if (verdict === "respond_now" && reply === undefined) {
       queue.length = 0;
@@ -381,9 +418,19 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
     // `adjust` re-schedules the rest of the session in light of what is done.
     // Once per session: repeated re-planning is its own failure mode, and the
     // sealed output file is written once by design.
+    // Skipped outright when there is nothing left to spend. Whether another
+    // step fits is a *countable* fact, and this project's rule is that
+    // countable facts are settled in code rather than handed to a model as a
+    // judgement — the same reason mentions are matched rather than judged.
+    // Measured: asked with an exhausted budget, `adjust` queues research anyway,
+    // 0/3. Not asking is both cheaper and correct.
     if (verdict === "adjust" && !adjusted && reply === undefined) {
       adjusted = true;
-      queue.unshift({ name: "adjust", topic: "" });
+      if (checkBudget(budget).exhausted) {
+        console.warn(`[session ${session.id}] skipping adjust: no budget left to add steps.`);
+      } else {
+        queue.unshift({ name: "adjust", topic: "" });
+      }
     }
 
     if (step.name === "adjust") {
@@ -448,11 +495,6 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
       queue.push({ name: config.session.respond_step, topic: "" });
     }
 
-    if (step.name === config.session.respond_step) {
-      reply = (outcome.value as StepResponse).message;
-      // Hand it over now. The closing steps are retrospection and run behind it.
-      await opts.onReply?.(reply);
-    }
 
     // `reflect` forms the impression, because it is the step that reads how
     // *they* reacted; `review` judges the agent's own work. The harness records
@@ -502,6 +544,48 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
       }
     }
 
+    // The only writer to the durable plan. No tool exposes plan writing, so a
+    // step cannot revise one on its own authority — the same arrangement as
+    // knowledge writes going through the gatekeeper.
+    if (step.name === config.session.plan_step) {
+      const revision = outcome.value as PlanRevision;
+      if (revision.goal.trim() === "") {
+        // The documented no-op: an unparsed revision must not close a plan or
+        // invent a goal, so nothing is written and the existing plan stands.
+        console.warn(`[session ${session.id}] plan revision had no goal; leaving the plan as it was.`);
+      } else {
+        // Measured after the work ran, so the recorded state is what the
+        // iteration actually left behind rather than what it set out to do.
+        const written = await writePlanRevision(paths, channelId, {
+          status: revision.status,
+          goal: revision.goal.trim(),
+          outstanding: revision.outstanding,
+          artifacts: revision.artifacts,
+          artifactState: await snapshotArtifacts(paths.files, revision.artifacts),
+          changed: revision.changed,
+          session: session.id,
+        });
+        // Later steps in *this* session see the revision, not the plan it
+        // replaced; a closed plan reads as absent immediately.
+        plan = written.status === "active" ? written : undefined;
+
+        // Finishing or abandoning is reported back to the channel that asked
+        // for the work. Somebody who was told "I'll look into it" is owed the
+        // outcome where they asked for it, and a plan that quietly dies is
+        // worse than one that never started.
+        //
+        // `changed` is doing double duty on purpose: it is the record of what
+        // this revision did *and* the text of the report. Computing the two
+        // separately would be a way for them to disagree.
+        if (continuation && written.status !== "active") {
+          const verb = written.status === "fulfilled" ? "Finished" : "Dropping";
+          await opts.onReply?.(
+            `${verb}: ${written.goal}\n\n${written.changed.trim() || "(no detail recorded)"}`,
+          );
+        }
+      }
+    }
+
     if (step.name === "impression") {
       const { summary } = outcome.value as Impression;
       if (summary.trim() !== "") {
@@ -536,7 +620,7 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
       // judge here — and it has already been caught once describing a reply that
       // did not exist. `summarize` is computed and leaves the session directory
       // a record of what ran, which is the whole reason to keep it.
-      for (const name of maintenance ? ["summarize"] : config.session.closing_steps) {
+      for (const name of unattended ? ["summarize"] : config.session.closing_steps) {
         queue.push({ name, topic: "" });
       }
       // Only when the session was actually interrupted. Most never are, and a
@@ -557,7 +641,11 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
   // run has no exchange in it, and letting one claim the pointer would have the
   // next real session reflecting on a housekeeping pass — asking how the last
   // answer landed when there was no last answer.
-  if (!maintenance) await recordLastSession(paths, channelId, session);
+  // Only an exchange becomes the session `reflect` reflects on. Neither a
+  // maintenance run nor a continuation has one in it, and letting either claim
+  // the pointer would have the next real session asking how the last answer
+  // landed when there was no answer.
+  if (!unattended) await recordLastSession(paths, channelId, session);
 
   if (replyTarget) {
     await writeParticipationTrace(session, {
@@ -580,12 +668,11 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
     completed,
     ...(budgetStop !== undefined ? { budgetStop } : {}),
     ...(supervisorVerdicts.length > 0 ? { supervisorVerdicts } : {}),
-    ...(deferred.length > 0 ? { deferred } : {}),
-    // Deferred arrivals are deliberately excluded: those are the ones that
-    // *should* get their own session.
     ...(consumedIds.size > 0 ? { consumed: [...consumedIds] } : {}),
     ...(reply !== undefined ? { reply } : {}),
     ...(reaction !== undefined ? { reaction } : {}),
+    ...(continuation ? { progress: progressBetween(planBefore, plan) } : {}),
+    ...(plan !== undefined ? { plan } : {}),
   };
 }
 
@@ -646,6 +733,8 @@ function toolContext(ctx: ExecuteContext, stepName: string): ToolContext {
   return {
     config: ctx.config,
     knowledge: () => (db ??= openKnowledgeDb(ctx.paths.knowledge)),
+    files: ctx.paths.files,
+    sessions: ctx.paths.sessions,
     session: ctx.session.id,
     step: stepName,
   };

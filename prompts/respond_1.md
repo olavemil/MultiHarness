@@ -17,6 +17,13 @@ ${incoming_message}
 
 ${request}
 
+## The plan this channel is working to
+
+${current_plan}
+
+Do not restate it or report on it unless you were asked. It is here so the reply does not
+contradict something already agreed, or re-propose work that is already committed to.
+
 ## What earlier steps in this session produced
 
 ${prior_step_output}

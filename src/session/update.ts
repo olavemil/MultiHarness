@@ -18,12 +18,16 @@ import { render } from "../prompts/render.ts";
  * Distinct from `react`, which shares its family and answers a different
  * question. Keeping the names apart keeps config and traces legible.
  *
- * A note on `defer_to_session`: the channel inbox already queues every arrival
- * for its own session, so deferral is the *default*, not an action. The verdict
- * therefore means only "this one is owed an answer" — it is recorded and
- * surfaced, and does not change what the harness does with the message. It was
- * measured at 0/3 against `continue` before the prompt drew that line, because
- * for an unrelated message "keep doing what you are doing" is simply true.
+ * **Four verdicts, not five.** `defer_to_session` was removed after its eval
+ * scored 0/3 three times running, each time correctly. The intent was "this one
+ * needs a session of its own" — but an arrival the session does not act on is
+ * *left in the inbox* and gets one anyway, so the verdict never named a distinct
+ * action. It briefly appeared to earn its place when `continue` was made to
+ * consume arrivals; that turned out to be the mistake, not the fix.
+ *
+ * What consumption means now: `adjust` and `respond_now` mean the session
+ * changed what it was doing because of the message, so it owns it. `continue`
+ * and `abort` do not, so the message stays queued for a session of its own.
  */
 
 export const UPDATE_VERDICTS = [
@@ -31,7 +35,6 @@ export const UPDATE_VERDICTS = [
   "adjust",
   "abort",
   "respond_now",
-  "defer_to_session",
 ] as const;
 
 export type UpdateVerdict = (typeof UPDATE_VERDICTS)[number];

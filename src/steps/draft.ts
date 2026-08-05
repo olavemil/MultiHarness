@@ -32,7 +32,6 @@ export const draft: ModelStep<Draft> = {
   ],
   outputFile: "draft.md",
   buildSchema: () => schema,
-  defaultTools: [],
 
   fallback: () => ({
     notes: "Draft could not be parsed.",

@@ -26,7 +26,7 @@ async function loop(replies: MockReply[], tools = resolveTools(["knowledge_searc
       role,
       prompt: "what do we know about docker?",
       tools,
-      context: { config, knowledge: () => db, session: "s", step: "respond" },
+      context: { config, knowledge: () => db, files: "/tmp", sessions: "/tmp", session: "s", step: "respond" },
       timeoutMs: 5_000,
     });
     return { result, db, server, config };
@@ -115,7 +115,7 @@ describe("runToolLoop", () => {
         role,
         prompt: "record what you know",
         tools: resolveTools(["knowledge_write"]),
-        context: { config, knowledge: () => db, session: "s", step: "research" },
+        context: { config, knowledge: () => db, files: "/tmp", sessions: "/tmp", session: "s", step: "research" },
         timeoutMs: 5_000,
       });
 

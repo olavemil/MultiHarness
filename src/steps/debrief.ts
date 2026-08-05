@@ -26,15 +26,14 @@ const schema = z.object({
  * sessions never run it.
  *
  * **The supervisor has had no feedback loop.** `update` issues verdicts and
- * `adjust` applies them; nothing has ever assessed whether a verdict was right,
- * which is part of why `defer_to_session` sat at 0/3 for two prompt revisions
- * before the cause was understood. This is the first thing that looks back at
- * one.
+ * `adjust` applies them; nothing had ever assessed whether a verdict was right.
+ * This is the first thing that looks back at one.
  *
- * The concrete failure it exists to catch is narrower and worse: a message
- * arrives mid-session, the supervisor judges it once, and the session ends
- * without it ever being answered. `abort` and `respond_now` make that likely,
- * and `continue` makes it silent. Nothing else in the system would notice.
+ * The concrete failure it exists to catch is narrower and worse: the session
+ * changed course because of an arrival — `adjust` or `respond_now` — and then
+ * finished without ever addressing it. Those are the messages nothing else will
+ * pick up, because consuming them takes them out of the inbox. An arrival the
+ * session merely carried past is still queued and is not its problem.
  *
  * Distinct from `review`, which asks how well the reply served the person, and
  * from `reflect`, which opens the *next* session by reading how the last one

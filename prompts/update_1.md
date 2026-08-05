@@ -29,10 +29,6 @@ Choose one:
 - **`respond_now`** — someone is waiting and the partial picture is enough. Use when a direct
   follow-up asks for something the work has probably already found, or when continuing would
   keep them waiting for no gain.
-- **`defer_to_session`** — what arrived is a separate *request*, one that will need work of its
-  own. Not merely unrelated: unrelated chatter is `continue`. Use this only when the new message
-  asks for something that would itself justify a session — a second task, arriving while the
-  first is still running. It marks the message as owed an answer rather than merely queued.
 
 ## Output
 

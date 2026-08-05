@@ -36,7 +36,25 @@ export async function testConfig(host: string, workingDir: string): Promise<Conf
     // an extra queued reply per case would be noise. Each has dedicated tests
     // that turn it back on. Empty `selectable_steps` also means `schedule` is
     // skipped, since there would be nothing for it to choose.
-    session: { ...config.session, reply_target: false, selectable_steps: [], restate_step: "" },
+    //
+    // `participation` is off for a different reason: it is a *draw*, and a
+    // suite whose outcomes depend on an RNG measures the RNG. Tests that pass
+    // `rng: () => 0` would in fact always speak, but relying on that would make
+    // every session test quietly dependent on the participation formula.
+    session: {
+      ...config.session,
+      reply_target: false,
+      selectable_steps: [],
+      restate_step: "",
+      participation: { ...config.session.participation, enabled: false },
+    },
+    // Several steps ship with tool allowlists, and each tool loop costs an extra
+    // model round trip. Stripped here so mechanics tests count the calls they
+    // are actually about; `session.test.ts` covers the shipped tool path
+    // directly, which is what stops the allowlists going untested everywhere.
+    steps: Object.fromEntries(
+      Object.entries(config.steps).map(([name, step]) => [name, { ...step, tools: [] }]),
+    ),
     ollama: { ...config.ollama, host, request_timeout_ms: 5_000 },
     roles: Object.fromEntries(
       Object.entries(config.roles).map(([name, role]) => [name, { ...role, model: `test-${name}` }]),

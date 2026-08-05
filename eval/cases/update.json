@@ -7,7 +7,10 @@
       "note": "Someone else's small talk. Changes nothing about the work.",
       "step_name": "research",
       "step_topic": "find which node version the project targets",
-      "message": { "from": "dana", "text": "coffee machine is broken again" },
+      "message": {
+        "from": "dana",
+        "text": "coffee machine is broken again"
+      },
       "field": "verdict",
       "expect": "continue"
     },
@@ -16,7 +19,10 @@
       "note": "A real question, but for someone else and on another subject.",
       "step_name": "research",
       "step_topic": "find which node version the project targets",
-      "message": { "from": "dana", "text": "@kim did the staging deploy finish?" },
+      "message": {
+        "from": "dana",
+        "text": "@kim did the staging deploy finish?"
+      },
       "field": "verdict",
       "expect": "continue"
     },
@@ -25,7 +31,10 @@
       "note": "The work is now pointless — the asker took it back.",
       "step_name": "research",
       "step_topic": "find which node version the project targets",
-      "message": { "from": "olav", "text": "actually never mind, I found it myself" },
+      "message": {
+        "from": "olav",
+        "text": "actually never mind, I found it myself"
+      },
       "field": "verdict",
       "expect": "abort"
     },
@@ -34,7 +43,10 @@
       "note": "Somebody supplied the answer while the agent was looking it up.",
       "step_name": "research",
       "step_topic": "find which node version the project targets",
-      "message": { "from": "dana", "text": "it's node 22, it's in the engines field" },
+      "message": {
+        "from": "dana",
+        "text": "it's node 22, it's in the engines field"
+      },
       "field": "verdict",
       "expect": "abort"
     },
@@ -43,18 +55,24 @@
       "note": "Still worth doing, but the shape changed. This is what adjust is for.",
       "step_name": "research",
       "step_topic": "find which node version the project targets",
-      "message": { "from": "olav", "text": "specifically I care about what type stripping needs, not the general answer" },
+      "message": {
+        "from": "olav",
+        "text": "specifically I care about what type stripping needs, not the general answer"
+      },
       "field": "verdict",
       "expect": "adjust"
     },
     {
       "id": "separate-matter",
-      "note": "A different subject entirely, deserving its own session rather than this one.",
+      "note": "Measured 0/3 for `defer_to_session` three times, and the model was right every time: an arrival the session does not act on stays in the inbox and gets a session of its own, so `continue` already produces the wanted outcome. The verdict has been removed. What this case now guards is the opposite mistake — reading an unrelated message as a reason to change course.",
       "step_name": "research",
       "step_topic": "find which node version the project targets",
-      "message": { "from": "olav", "text": "unrelated, but can you look at why the Slack adapter drops thread replies?" },
+      "message": {
+        "from": "olav",
+        "text": "unrelated, but can you look at why the Slack adapter drops thread replies?"
+      },
       "field": "verdict",
-      "expect": "defer_to_session"
+      "expect": "continue"
     }
   ]
 }

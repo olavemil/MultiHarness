@@ -8,6 +8,7 @@ export interface MockRequest {
     model?: string;
     messages?: { role: string; content: string }[];
     format?: unknown;
+    tools?: unknown[];
     options?: Record<string, unknown>;
     keep_alive?: unknown;
     think?: unknown;

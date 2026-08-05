@@ -126,6 +126,12 @@ export const Config = z.object({
     /** Always appended, whether or not the agent chose to respond. */
     closing_steps: z.array(z.string()).min(1),
     /**
+     * Writes and revises the channel's durable, cross-session plan. The only
+     * step whose output the harness applies to `channels/<id>/plans/`. Empty
+     * disables planning entirely.
+     */
+    plan_step: z.string().default("plan"),
+    /**
      * Judges how the session handled messages that arrived while it was
      * working, and reports anything left unanswered. Queued only when something
      * actually arrived — most sessions are never interrupted. Empty disables it.
@@ -153,6 +159,26 @@ export const Config = z.object({
         steps: z.array(z.string()).default(["impression"]),
       })
       .default(() => ({ enabled: false, idle_ms: 900_000, steps: ["impression"] })),
+    /**
+     * Carrying on with an unfinished plan after a reply has gone out.
+     *
+     * Bounded by a hard iteration cap rather than by a judgement, and stopped
+     * the moment an iteration closes nothing. Both are countable; neither is
+     * asked of a model.
+     */
+    continuation: z
+      .object({
+        enabled: z.boolean().default(false),
+        /**
+         * Work done each iteration, before `plan` revises. `respond` is refused
+         * whatever this says: a continuation reports through the plan, and a
+         * reply to nobody would be the agent talking to itself.
+         */
+        steps: z.array(z.string()).default(["reason"]),
+        /** Hard cap on iterations per reply. Reaching it is plan failure. */
+        max_iterations: z.number().int().positive().default(3),
+      })
+      .default(() => ({ enabled: false, steps: ["reason"], max_iterations: 3 })),
     max_wallclock_ms: z.number().int().positive().default(900_000),
     /**
      * Model and tool calls a session may spend. Wallclock alone is not a bound:

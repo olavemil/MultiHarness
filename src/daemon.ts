@@ -4,8 +4,10 @@ import type { Config } from "./config/schema.ts";
 import type { Adapter } from "./adapters/types.ts";
 import { loadConfig } from "./config/load.ts";
 import type { Identity, InboundMessage } from "./core/types.ts";
-import { maintenanceTrigger, messageTrigger } from "./core/trigger.ts";
+import { continuationTrigger, maintenanceTrigger, messageTrigger } from "./core/trigger.ts";
 import { pendingMaintenance } from "./session/maintenance.ts";
+import { shouldContinue, type ProgressDelta } from "./session/continuation.ts";
+import type { Plan } from "./store/planStore.ts";
 import { runSession } from "./session/run.ts";
 import { appendMessage, readRecent } from "./store/channelStore.ts";
 import { loadIdentity } from "./store/identityStore.ts";
@@ -162,10 +164,6 @@ async function main(): Promise<void> {
           `not starting separate sessions for them`,
       );
     }
-    for (const { text } of result.deferred ?? []) {
-      // Left in the inbox on purpose: deferral means it is owed a session.
-      console.log(`[daemon] deferred to its own session: ${text.slice(0, 60)}`);
-    }
     for (const { step, verdict } of result.supervisorVerdicts ?? []) {
       console.warn(`[daemon] supervisor ${verdict} during ${step}`);
     }
@@ -177,6 +175,71 @@ async function main(): Promise<void> {
       adapter.status?.(
         message.channelId,
         `no reply — ${result.reaction?.reason ?? "reaction did not ask for one"}`,
+      );
+    }
+
+    // Carry on with the plan, if there is one and nothing is waiting. Runs
+    // inside this channel's drain, so it is serialised with everything else and
+    // an arriving message simply gets there first.
+    await carryOn(message.channelId, identity, {
+      plan: result.plan,
+      replied: result.reply !== undefined,
+    });
+  }
+
+  /**
+   * Works an unfinished plan after a reply, one iteration at a time.
+   *
+   * Every gate is countable — a reply went out, a plan is running with items
+   * left, nothing is queued, the last iteration closed something, the cap is not
+   * reached. None of it is asked of a model, which is what keeps a background
+   * loop from talking itself into running forever.
+   */
+  async function carryOn(
+    channelId: string,
+    identity: Identity,
+    state: { plan: Plan | undefined; replied: boolean },
+  ): Promise<void> {
+    let plan = state.plan;
+    let delta: ProgressDelta | undefined;
+
+    for (let iteration = 1; ; iteration++) {
+      const reason = shouldContinue({
+        config,
+        plan,
+        replied: state.replied,
+        pending: channelOf(channelId).inbox.length,
+        nextIteration: iteration,
+        delta,
+      });
+      if (!reason) return;
+
+      const history = await readRecent(paths, channelId, HISTORY_LIMIT);
+      const result = await runSession({
+        config,
+        paths,
+        trigger: continuationTrigger(channelId, iteration, reason),
+        identity,
+        history,
+        // The plan step reports through this when it closes the plan.
+        onReply: async (text) => {
+          await appendMessage(paths, channelId, {
+            id: `${channelId}-report-${iteration}-${Date.now()}`,
+            identityId: "agent",
+            author: "agent",
+            text,
+            at: new Date().toISOString(),
+            fromAgent: true,
+          });
+          await adapter.send(channelId, text);
+        },
+      });
+
+      delta = result.progress;
+      plan = result.plan;
+      console.log(
+        `[daemon] continuation ${iteration} in ${channelId}: ` +
+          `${delta?.closed ?? 0} item(s) closed${delta?.finished ? ", plan closed" : ""}`,
       );
     }
   }

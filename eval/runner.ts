@@ -51,6 +51,8 @@ export interface EvalCase {
    * supervisor decided about each. Without these the step has nothing to judge.
    */
   arrivals?: { author: string; text: string; verdict: string }[];
+  /** The durable plan already running in this channel, as `current_plan`. */
+  plan?: { goal: string; outstanding: string[]; artifacts?: string[] };
   /** For `compact`: the notes accumulated under one knowledge entry. */
   entry?: { topic: string; notes: { text: string; session?: string; step?: string }[] };
   /** For `update`: the step in flight and what it was given to do. */
@@ -95,6 +97,7 @@ const DEFAULT_FIELD: Record<string, string> = {
   update: "verdict",
   debrief: "unanswered",
   compact: "compacted",
+  plan: "status",
 };
 
 /** The field that explains it, shown when a case fails. */
@@ -113,6 +116,7 @@ const REASON_FIELD: Record<string, string> = {
   update: "reason",
   debrief: "assessment",
   compact: "reasoning",
+  plan: "reasoning",
 };
 
 export function buildInput(testCase: EvalCase, index = 0) {
@@ -158,6 +162,21 @@ export function buildInput(testCase: EvalCase, index = 0) {
     impressions: (testCase.impressions ?? []).map((text) => ({ text })),
     requestCorrection: testCase.request_correction ?? "",
     arrivals: testCase.arrivals ?? [],
+    ...(testCase.plan
+      ? {
+          plan: {
+            revision: 0,
+            status: "active" as const,
+            goal: testCase.plan.goal,
+            outstanding: testCase.plan.outstanding,
+            artifacts: testCase.plan.artifacts ?? [],
+            artifactState: [],
+            changed: "",
+            session: "000001",
+            at: new Date().toISOString(),
+          },
+        }
+      : {}),
     ...(testCase.entry
       ? {
           compactionTarget: {

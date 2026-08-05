@@ -37,6 +37,19 @@ ${selectable_steps}
   working something out rather than looking something up.
 - `draft` — write a first pass for the reply step to sharpen. Choose it when the reply is long
   or delicate enough that composing and judging it at once would go badly.
+- `plan` — write or revise the standing plan this channel works to. Choose it only when the
+  message is about the *course of work itself*: setting out something to be done over several
+  exchanges, changing what was agreed, or reporting that it is finished. Not for a question that
+  simply happens to be large. A plan is a commitment later sessions act on unprompted, so
+  creating one for a single question leaves the agent pursuing it long after the answer landed.
+
+## The plan this channel is working to
+
+${current_plan}
+
+If a plan is running and this message bears on it — progress, a change of direction, or its
+completion — `plan` is worth choosing. If nothing is running and nothing here asks for
+sustained work, it is not.
 
 ## What this session can still afford
 

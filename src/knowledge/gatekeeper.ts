@@ -132,7 +132,21 @@ export async function writeKnowledge(opts: WriteOptions): Promise<GatekeeperResu
     return { verdict: "append", reason, entry: existing, neighbours };
   }
 
-  const entry = createEntry(db, namespace, topic, summary.trim(), vector, provenance);
+  // Within one process this cannot fail on the unique constraint: `node:sqlite`
+  // is synchronous and there is no `await` between the lookup above and this
+  // call, so nothing can interleave. It *can* fail across processes — two
+  // daemons pointed at one instance directory share the file — and losing a
+  // write to an unhandled exception there would be a poor trade for a race
+  // nobody should be running into anyway.
+  let entry: Entry;
+  try {
+    entry = createEntry(db, namespace, topic, summary.trim(), vector, provenance);
+  } catch (cause) {
+    const raced = findEntry(db, namespace, topic);
+    if (!raced) throw cause;
+    appendContent(db, raced.id, candidate, provenance);
+    return { verdict: "append", reason, entry: raced, neighbours };
+  }
   appendContent(db, entry.id, candidate, provenance);
   return { verdict, reason, entry, neighbours };
 }

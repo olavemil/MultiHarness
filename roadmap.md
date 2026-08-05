@@ -14,8 +14,8 @@ than to rediscover.
 Built and measured: the session pipeline (`reflect → react → restate → schedule → [research |
 reason | draft] → respond → summarize → review → [impression]`), the knowledge store with its
 gatekeeper, identities with append-only impressions, five tools, CLI and Slack adapters, and
-five clean eval suites (react 13/13, reflect 12/12, gatekeeper 8/8, debrief 8/8, compact 7/7)
-plus `restate` at 9/13.
+six clean eval suites (react 13/13, reflect 12/12, gatekeeper 8/8, debrief 8/8, compact 7/7,
+plan 8/8) plus `restate` at 9/13.
 
 A reading of the question now survives across sessions — `prior_request` carries the previous
 session's `request.md` forward, and `reflect` emits a `correction` when the new message shows
@@ -41,9 +41,11 @@ step's partial output is salvaged rather than discarded, a failed step seals `fa
 why, and a message arriving mid-session is absorbed instead of opening a second session for the
 same exchange.
 
-Not built: agent-files tools, the `message` step, cross-session planning, continued work, the
-web UI, the rolling digest. The supervisor, maintenance sessions, and everything in 1d are built
-bar live exercise.
+**Everything built is now enabled by default** — participation, maintenance, compaction, restate,
+debrief, reply_target, and read-only knowledge tools on `respond`. Slack stays per-instance.
+Nothing is waiting behind a flag, so the next bugs found will be found by running it.
+
+Not built: agent-files tools, the `message` step, the web UI, the rolling digest.
 
 ---
 
@@ -56,24 +58,34 @@ join, and cancellation via `AbortSignal` on `abort` / `respond_now`.
 
 - ~~`adjust`~~ — built. Re-schedules the remainder of the session from what has finished; does
   not touch the durable plan, which is a separate lifetime.
-- ~~`defer_to_session` earns nothing~~ — **it does now.** Item 1d made consumption the default:
-  the daemon drops arrivals the session absorbed, and deferral is the exception that keeps one
-  queued for a session of its own. Its 0/3 score was correct for the build it was measured in,
-  where the two verdicts did the same thing. Re-measure; the case for deleting it has gone.
-- **Concurrent knowledge writes.** The gatekeeper is a read-then-write with no transaction
-  around it, so two channels writing the same topic can both decide "new". Introduced by the
-  per-channel actor; the unique constraint turns it into an error rather than a duplicate, but
-  it is unhandled.
-- **One in flight.** Each arrival is now judged once rather than at every boundary, but nothing
-  stops two `update` calls overlapping if messages arrive in quick succession.
+- ~~`defer_to_session`~~ — **removed.** Re-measured after 1d, as promised, and the re-measure
+  showed 1d's reasoning was wrong: making `continue` consume arrivals silently dropped unrelated
+  messages. Consumption now follows `adjust` / `respond_now` only, which leaves the fifth verdict
+  with no distinct action — the conclusion the eval reached three times. Suite: **5 pass · 0
+  unstable · 1 fail**.
+- ~~**Concurrent knowledge writes**~~ — checked, and the race does not exist in-process:
+  `node:sqlite` is synchronous and nothing awaits between the gatekeeper's lookup and its insert.
+  Handled defensively for the cross-process case anyway. See CLAUDE.md.
+- ~~**One `update` in flight**~~ — already guaranteed: the step loop awaits both the step and the
+  update before advancing, so two can never overlap.
 - ~~`update` eval~~ — built, 6 cases, 4 pass / 1 unstable / 1 fail. It found the
   `defer_to_session` redundancy above on its first run.
-- **No eval suite for `adjust`** — still a `fast` classification with no measurement.
+- ~~**No eval suite for `adjust`**~~ — six cases, now **5 pass · 0 unstable · 1 fail**. Found two
+  real defects: the step could not see the arrival it was asked to judge, and it reached for
+  `research` whatever the gap was. The remaining fail is the budget case, settled in code.
 - ~~No feedback on verdicts~~ — `debrief` closes an interrupted session by judging how the
   interruption was handled, and reports anything that arrived and was never answered. The first
   thing that ever looks back at a verdict. **8/8 at n=3.** See CLAUDE.md.
-- **Never run live.** Nothing has yet arrived mid-session to trigger any of it.
-- **Overlapping `update` calls.** Still nothing stops two if messages land in quick succession.
+- **Partly run live.** `update` has fired and returned a verdict, and `debrief` has closed a
+  session on the back of it. What has *not* fired: `adjust`, `abort`, `respond_now`, and message
+  consumption — all of which need an arrival landing mid-step. With `respond` at `think = false`
+  a session is ~18s, so the window is narrow; it will open naturally once a `research` or `reason`
+  step is in play on Slack.
+- **A step could run twice and fail to seal.** Found by a test: `respond_now` and `adjust` are
+  both guarded on `reply === undefined`, but the reply was recorded *after* the verdicts were
+  applied, so a verdict arriving on `respond`'s own completion read a stale `undefined` and queued
+  `respond` again. Sealed output is `chmod 444`, so the second seal failed with `EACCES`. Fixed by
+  recording the reply before the verdicts.
 
 ---
 
@@ -403,7 +415,32 @@ answering each message in isolation.
 
 ---
 
-## 3b. Continued work
+## 3b. Continued work — built
+
+Built. `session/continuation.ts` plus a `continuation` trigger; `[session.continuation]`.
+
+**The progress step was not needed.** This item was written assuming a model would have to judge
+whether an iteration achieved anything, with elaborate framing to stop it answering yes. With
+`plan` in place that is a fact about two revisions: did `outstanding` shrink, or did the status
+change. Counted in code, so the judgement the item worried most about is never made. `plan.changed`
+then serves as both the record and the status report, which is the "one call, two uses" idea
+arrived at from the other direction.
+
+**Still open**
+
+- **Never run live.** Enabled by default and covered by tests; no continuation has yet fired from
+  a real reply.
+- ~~**The work step writes nothing durable**~~ — fixed twice over. A plan may now name
+  `artifacts`, and progress on such a plan is measured from the files rather than from the plan
+  step's account of it; and `reason` has file-write access, so the default work step can produce
+  them. What is unmeasured is whether the model actually names useful artifacts.
+- **No status update mid-flight.** Only closing is reported. Intermediate updates need the rate
+  limiting shared with the `message` step.
+- **Idle work competes with the sleep phase.** A continuation and a maintenance session both want
+  a quiet channel. Continuation is goal-directed and currently wins by running first, on the
+  drain, rather than by any explicit rule.
+
+**The original statement**, kept because it is what the design answers:
 
 Once a plan can survive sessions, the agent can keep working on it between messages: reply
 first, then carry on while there is an unfulfilled plan, no new message has arrived, and it is
@@ -515,16 +552,30 @@ fusing them would repeat the mistake that `react`/`plan` were split to undo.
 
 Several agents in one room, ordered so they do not all answer at once.
 
-**The thing to know first:** weighted participation **does not work across instances today**.
-`core/participation.ts` counts the agent's own share via `fromAgent`, and instance B sees
-instance A's messages as another participant. So B's own share stays low, its damping rises, and
-it becomes *more* likely to speak. Both answer. The mechanism that was supposed to prevent
-crowding actively causes it.
+**Now live.** `galatea` and `nephele` are running as separate instances against the same
+workspace, deliberately, to exercise exactly this. Each is a distinct agent — its own name,
+aliases, `working_dir`, and session numbering — so they do not double-answer and nothing races
+in the store. What they do hit is the participation defect below, immediately.
+
+**Corrected:** an instance treating another instance as an ordinary participant is **intended**.
+It is the same principle as the Slack adapter not filtering other bots — the agent does not need
+to know whether it is talking to a human — and the resulting behaviour is what is wanted: a
+human and one instance going back and forth keeps that instance engaged via the follow-up
+multiplier, while a third instance that has said little becomes more likely to interject with a
+different view. Mentions and relevance drive engagement; crowding damps it.
+
+An earlier version of this item proposed counting siblings toward "agent share" instead. That
+would have made the instances aware of each other's nature, which is exactly what the design
+avoids. Dropped.
+
+**What is still worth checking** is whether the formula damps crowding as intended.
+`damping = fairShare / agentShare` clamped to 2: more participants lowers `fairShare`, but a
+quiet agent has a tiny `agentShare` and the ratio pins to the cap either way. A near-silent agent
+in a six-person room sits at the same damping as in a three-person one, so crowding only bites
+once the agent is already talking. That may be right; it has not been decided on purpose.
 
 **Scope**
 
-- Recognise sibling instances as agents rather than participants — a configured list of sibling
-  identities, counted toward "agent share" rather than against it.
 - Priority: being named already forces a reply, so a direct address goes to the right one.
 - Deferral: an instance that is not named waits, sees whether a sibling answered, and stands
   down. Needs the trigger work from item 2.
@@ -536,6 +587,71 @@ crowding actively causes it.
   human" — but it makes deferral a timing problem rather than a lock.
 - Whether siblings read each other's knowledge stores. Sharing makes them one agent with two
   voices; separate stores make them genuinely distinct, and probably more interesting.
+
+---
+
+## 4a. A shared supervisor across instances
+
+One daemon hosting every instance, instead of one process per agent. Proposed after running two
+side by side, and it is the piece that makes item 4 tractable rather than merely specified.
+
+**Scope**
+
+- A single daemon holding N instances, each with its own agent identity, `working_dir`, and Slack
+  configuration — potentially against different workspaces.
+- One queue across instances, so a long session for one agent does not starve another. Per-channel
+  queues already prevent starvation *between channels*; this is the same property between agents.
+- **A shared `react` gate.** One message, judged once by every instance: "does this need handling,
+  and how much do I want it?" Instances answering no exit immediately; those answering yes are
+  ordered by stated interest.
+- Sessions run sequentially or in parallel — see below.
+
+### What a shared daemon actually buys
+
+Not a participation fix — instances are *meant* to see each other as ordinary participants, and
+nothing here should change that. What it buys is **coordination before the fact** rather than
+damping after it: today each instance decides alone and the room finds out afterwards whether two
+of them spoke. A shared gate lets one message be judged once by everybody, with the interested
+ranked against each other.
+
+That is a different mechanism from participation and should stay one. Participation asks "does
+this room need another message from me"; the gate asks "of the agents that want this one, whose
+turn is it". Fusing them would put a stochastic draw inside a ranking.
+
+### `interest` stops being optional
+
+Ranking the instances that want a message needs a number, not a boolean. That is exactly the
+`interest` field item 4b proposes, so **4b becomes a prerequisite rather than an adjacent idea**.
+Being named must bypass the ranking entirely — a message naming one agent goes to that agent
+whatever anyone else's interest is, and mention detection is already per-agent and deterministic.
+
+### Parallel buys less than it looks
+
+The instances share a `reasoning` model. Two sessions running concurrently do not get two models;
+they queue inside ollama on the same one. So parallelism across instances costs the "only one
+large KV cache is live" guarantee and returns very little — **sequential is both simpler and
+nearly as fast** while the role table points several instances at the same weights. It becomes
+worth revisiting only if instances are deliberately given different models.
+
+**Decisions it carries**
+
+- **`process.loadEnvFile` is global, and that is the concrete blocker.** `loadInstanceEnv` reads
+  `<instance>/.env` straight into `process.env`, and `selectAdapter` reads
+  `process.env.SLACK_BOT_TOKEN`. Two instances in one process would overwrite each other's
+  tokens and both connect as whichever loaded last. Per-instance secrets have to be read into a
+  scoped object and passed to the adapter, never into the environment.
+- **How many of the interested actually speak.** Top interest only is the safe default; anything
+  above a threshold reintroduces the crowding this exists to prevent. Whatever the rule, it wants
+  to be one place, not a per-instance setting.
+- **N instances means N `fast` calls per message**, before any of them does real work. Fine at
+  two, linear thereafter, and it lands on the latency path.
+- **Whether siblings share a knowledge store.** Unchanged from item 4: sharing makes them one
+  agent with two voices; separate stores make them genuinely distinct, and probably more
+  interesting. A shared daemon makes sharing *easy*, which is a reason to decide it on purpose
+  rather than by default.
+- **One process is one blast radius.** Today a crash takes down one agent; then it takes down all
+  of them. The per-channel drain already isolates a failed session, and the same discipline has
+  to extend to a failed instance.
 
 ---
 
@@ -674,8 +790,8 @@ visible to everyone in it.
 
 ## 6. Smaller, whenever convenient
 
-- **Agent files tools** — read/write/list/move within `files/`, which exists and is empty.
-  Spec'd, self-contained, low risk, and needs a path validator rather than a sandbox.
+- ~~**Agent files tools**~~ — built: `file_list`, `file_read`, `file_write` behind a path
+  validator that refuses absolute paths, traversal, and symlinks out of the tree.
 - **`message` step** — consult a third party, or notify mid-session. Two different jobs
   (`consult` and `notify`) with different failure modes; split them. Needs rate limiting, or two
   agents in a channel will ping-pong.

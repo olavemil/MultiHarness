@@ -19,6 +19,7 @@ export const respond: ModelStep<Response> = {
     "recent_messages",
     "incoming_message",
     "request",
+    "current_plan",
     "prior_step_output",
   ],
   outputFile: "response.md",

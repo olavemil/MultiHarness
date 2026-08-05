@@ -4,6 +4,7 @@ import { compact } from "./compact.ts";
 import { debrief } from "./debrief.ts";
 import { draft } from "./draft.ts";
 import { impression } from "./impression.ts";
+import { plan } from "./plan.ts";
 import { schedule } from "./schedule.ts";
 import { react } from "./react.ts";
 import { reason } from "./reason.ts";
@@ -21,6 +22,7 @@ const ALL: readonly AnyStep[] = [
   restate,
   schedule,
   adjust,
+  plan,
   research,
   reason,
   draft,

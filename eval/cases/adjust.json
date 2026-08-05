@@ -1,12 +1,20 @@
 {
   "step": "adjust",
-  "note": "Adjust re-schedules the remainder of a session once some work has finished, triggered when the supervisor sees an arrival that changes the shape of the task. `completed` supplies the finished step output it reads. Empty steps is the common correct answer: the failure this step exists to prevent is repeating work already done, not enabling more of it.",
+  "note": "`adjust` runs when the supervisor decides a mid-session arrival may have changed what the rest of the session should do. Every case therefore carries the arrival that triggered it — without one the step is being asked whether *new* information opened a gap while shown no new information, and it falls back to judging the original task, which reliably means 'research more'. The load-bearing distinction: an arrival that narrows or redirects the question opens a gap; one that comments, agrees, or restates does not, however incomplete the finished work looks.",
   "cases": [
     {
       "id": "answer-already-found",
-      "note": "Research answered it. Anything further is repetition.",
-      "history": [{ "from": "olav", "text": "what node version does this target?" }],
-      "message": { "from": "olav", "text": "harness, what node version does this target?" },
+      "note": "The arrival withdraws the question rather than extending it.",
+      "history": [
+        {
+          "from": "olav",
+          "text": "what node version does this target?"
+        }
+      ],
+      "message": {
+        "from": "olav",
+        "text": "harness, what node version does this target?"
+      },
       "completed": [
         {
           "name": "research",
@@ -16,13 +24,28 @@
       ],
       "field": "steps",
       "mode": "length",
-      "expect": 0
+      "expect": 0,
+      "arrivals": [
+        {
+          "author": "olav",
+          "text": "ah I think I already saw that in package.json",
+          "verdict": "adjust"
+        }
+      ]
     },
     {
       "id": "research-empty-do-not-retry",
-      "note": "Research came up empty. Running it again finds the same nothing; reply with what is known.",
-      "history": [{ "from": "olav", "text": "does sqlite-vec ship arm64 prebuilts?" }],
-      "message": { "from": "olav", "text": "harness, does sqlite-vec ship arm64 prebuilts?" },
+      "note": "Research came up empty and the arrival says the person could not find it either — it confirms the gap rather than opening one. Running the same search again finds the same nothing.",
+      "history": [
+        {
+          "from": "olav",
+          "text": "does sqlite-vec ship arm64 prebuilts?"
+        }
+      ],
+      "message": {
+        "from": "olav",
+        "text": "harness, does sqlite-vec ship arm64 prebuilts?"
+      },
       "completed": [
         {
           "name": "research",
@@ -32,15 +55,28 @@
       ],
       "field": "steps",
       "mode": "length",
-      "expect": 0
+      "expect": 0,
+      "arrivals": [
+        {
+          "author": "olav",
+          "text": "hmm, I couldn't find anything on it either",
+          "verdict": "adjust"
+        }
+      ]
     },
     {
       "id": "facts-gathered-now-needs-thinking",
       "note": "The looking-up is done and the remaining difficulty is working out what it means.",
       "history": [
-        { "from": "olav", "text": "the gatekeeper embeds every candidate, and research writes a lot of them" }
+        {
+          "from": "olav",
+          "text": "the gatekeeper embeds every candidate, and research writes a lot of them"
+        }
       ],
-      "message": { "from": "olav", "text": "harness, is that going to be a problem at scale?" },
+      "message": {
+        "from": "olav",
+        "text": "harness, is that going to be a problem at scale?"
+      },
       "completed": [
         {
           "name": "research",
@@ -50,15 +86,28 @@
       ],
       "field": "steps",
       "mode": "includes",
-      "expect": "reason"
+      "expect": "reason",
+      "arrivals": [
+        {
+          "author": "olav",
+          "text": "what I actually want to know is whether it holds up at ten thousand entries",
+          "verdict": "adjust"
+        }
+      ]
     },
     {
       "id": "narrowed-needs-specific-lookup",
       "note": "The follow-up asks something the finished work did not cover, and it is a fact.",
       "history": [
-        { "from": "olav", "text": "what node version does this target?" }
+        {
+          "from": "olav",
+          "text": "what node version does this target?"
+        }
       ],
-      "message": { "from": "olav", "text": "harness, specifically what does type stripping need?" },
+      "message": {
+        "from": "olav",
+        "text": "harness, specifically what does type stripping need?"
+      },
       "completed": [
         {
           "name": "research",
@@ -68,13 +117,28 @@
       ],
       "field": "steps",
       "mode": "includes",
-      "expect": "research"
+      "expect": "research",
+      "arrivals": [
+        {
+          "author": "olav",
+          "text": "sorry — specifically, what is the minimum for parameter properties?",
+          "verdict": "adjust"
+        }
+      ]
     },
     {
       "id": "thinking-done-reply-now",
-      "note": "Reasoning reached a conclusion. Nothing is left but to write it.",
-      "history": [{ "from": "olav", "text": "sqlite or flat files?" }],
-      "message": { "from": "olav", "text": "harness, which would you pick?" },
+      "note": "Someone agreeing is not new information. A conclusion exists; writing the reply is the remaining work.",
+      "history": [
+        {
+          "from": "olav",
+          "text": "sqlite or flat files?"
+        }
+      ],
+      "message": {
+        "from": "olav",
+        "text": "harness, which would you pick?"
+      },
       "completed": [
         {
           "name": "reason",
@@ -84,13 +148,28 @@
       ],
       "field": "steps",
       "mode": "length",
-      "expect": 0
+      "expect": 0,
+      "arrivals": [
+        {
+          "author": "kari",
+          "text": "agreed, sqlite sounds right to me too",
+          "verdict": "adjust"
+        }
+      ]
     },
     {
       "id": "no-budget-left",
-      "note": "Whatever is missing, there is no room to go and get it.",
-      "history": [{ "from": "olav", "text": "how does the supervisor decide to abort?" }],
-      "message": { "from": "olav", "text": "harness, how does the supervisor decide to abort?" },
+      "note": "The arrival does open a real gap — and there is no room to go and get it. Known fail: the model queues research anyway. Production no longer depends on this judgement (the session skips `adjust` when the budget cannot cover a step), but the case is kept because respecting a stated constraint is worth measuring.",
+      "history": [
+        {
+          "from": "olav",
+          "text": "how does the supervisor decide to abort?"
+        }
+      ],
+      "message": {
+        "from": "olav",
+        "text": "harness, how does the supervisor decide to abort?"
+      },
       "completed": [
         {
           "name": "research",
@@ -101,7 +180,14 @@
       "budget_remaining": "None left — answer directly with what is already available.",
       "field": "steps",
       "mode": "length",
-      "expect": 0
+      "expect": 0,
+      "arrivals": [
+        {
+          "author": "olav",
+          "text": "and how does the cancellation actually reach the running step?",
+          "verdict": "adjust"
+        }
+      ]
     }
   ]
 }

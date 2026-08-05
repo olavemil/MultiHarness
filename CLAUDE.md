@@ -14,6 +14,45 @@ full session directory, and each session reads the previous one in the same chan
 knowledge store, tools, identities, and the supervisor loop are built. Cross-session planning,
 scheduled triggers, and the web UI are not — see [roadmap.md](roadmap.md).
 
+## Editing prompts under a running daemon
+
+**`prompts/` is live.** `loadPrompt` reads from disk on every call, but a step's
+`contextBlocks` are fixed when the module is imported. Editing a prompt while a daemon runs
+therefore hot-patches half the pair, and a template that grows a `${block}` its loaded step does
+not declare fails at render time.
+
+Seen live: adding `${current_plan}` to `schedule_1.md` killed a session in a daemon started forty
+minutes earlier. `render` throwing is the guard working as designed, and `failure.md` recorded
+the whole thing — step, cause, stack, and the partial files — which was its first real use.
+
+Restart the daemon after touching prompts, or accept that the running one is a different build
+from the one on disk.
+
+## Everything ships enabled
+
+This is not a production system and has no external users to disappoint, so the default is **on**:
+a feature that is off is a feature nobody finds the bugs in. Breaking fast beats failing silently.
+
+Currently on in `config/default.toml`: `restate`, `debrief`, `reply_target`, weighted
+participation, maintenance sessions (impression synthesis + knowledge compaction), and read-only
+knowledge tools on `respond`.
+
+Two deliberate exceptions, both because "on" would break the common path rather than exercise it:
+
+- **`[slack] enabled = false`** in the repo default. Slack is per instance — `npm run init`
+  writes `enabled = true` into the instance config once it has verified tokens. Enabling it in
+  the shipped default makes `npm run dev` a startup error for anyone without `$SLACK_BOT_TOKEN`,
+  which kills the CLI path rather than testing the Slack one.
+- **The test fixture strips some of it.** `testConfig` turns off `reply_target`, `restate`,
+  `selectable_steps`, participation, and `respond`'s tools. Mechanics tests count model calls, and
+  each of those adds one; participation additionally makes an outcome depend on a draw, and a
+  suite whose results depend on an RNG measures the RNG. **Anything the fixture strips needs one
+  test that turns it back on**, or enabling it in config would be untested everywhere — that is
+  what `runs respond with the knowledge tools it ships with` exists for.
+
+**Turning `respond`'s tools on is the one change with a standing cost**: an extra model round trip
+on every reply, on the latency path. It is the first line to comment out if replies feel slow.
+
 ## Runtime and process model
 
 **TypeScript on Node 22+.** Chosen over Python specifically to catch shape errors at compile
@@ -58,9 +97,10 @@ Use these terms consistently in code, config, and docs. Don't invent synonyms.
   Steps have a prompt file, a context spec, a model role, a tool allowlist, and an output file.
 - **schedule** — choosing which steps run in *this* session. A `fast` call, sealed to
   `schedule.md`.
-- **plan** — the durable, cross-session planning document, revised as `plan_N.md`. Not yet
-  built. Never use "plan" for in-session step selection: they are different lifetimes, and the
-  filenames collide.
+- **plan** — the durable, cross-session planning document, revised as `plan_N.md` under
+  `channels/<id>/plans/`. Never use "plan" for in-session step selection: they are different
+  lifetimes, and the filenames collide. That is exactly why the in-session one was renamed
+  `schedule`.
 - **request** — the incoming message restated as a self-contained statement of the task, sealed
   to `request.md` by the `restate` step. Additive: the literal message stays available
   everywhere, and the gap between the two is what makes interpretation drift visible.
@@ -330,17 +370,40 @@ Suites live in `eval/cases/<step>.json`. `reflect` cases carry the previous sess
 output as `prior`, and `expectNoRecommendations` asserts the step invented no course-correction
 — the failure that compounds, since the next session reads whatever it wrote.
 
-**update, phi4, n=3, 6 cases: 4 pass · 1 unstable · 1 fail.** The failure is a design finding
-rather than a prompt one. `defer_to_session` scores 0/3 across two prompt revisions, and the
-model's reasoning is right each time: "unrelated to the current task" — so `continue`. The
-verdict describes no distinct action, because **the channel inbox already queues every arrival
-for its own session**. Deferral is the default, not a choice. It is implemented as recording
-only, and reducing the verdict set to four would probably classify better — fewer options is
-the lesson from every classification step here.
+**update, phi4, n=3, 6 cases: 5 pass · 0 unstable · 1 fail**, after the verdict set was cut from
+five to four.
 
-`answered-by-someone-else` sits at 2/3: when a bystander supplies the answer mid-research, the
-model sometimes reads that as useful input rather than as grounds to stop. Arguably defensible,
-and left as a known flake rather than tuned.
+### `defer_to_session` was removed, and the eval was right three times
+
+It scored 0/3 across three separate measurements, and the model's reasoning was correct every
+time: for an unrelated message, "keep doing what you are doing" is simply true. The verdict named
+no distinct action, because **an arrival the session does not act on stays in the inbox and gets
+a session of its own anyway**.
+
+Item 1d appeared to give it meaning by making `continue` *consume* the arrival, so that deferral
+became the exception that kept one queued. **That was the mistake, not the fix.** `continue`
+means "this step is still the right step"; it says nothing about the message having been handled.
+Consuming on it silently dropped anything unrelated — the message left the inbox and no session
+ever answered it. The eval had been pointing at this the whole time and the conclusion was
+reversed on bad reasoning.
+
+**Consumption now follows what the session actually did.** `adjust` and `respond_now` mean it
+changed course because of the arrival, so it owns the message and owes it an answer. `continue`
+and `abort` leave it queued. With that fixed, `separate-matter` scores **3/3** and the fifth
+verdict has nothing left to do.
+
+### The remaining failure, and a hypothesis that did not hold
+
+`answered-by-someone-else` has drifted **2/3 → 1/3 → 0/3** across runs: when a bystander supplies
+the answer mid-research, the model reads it as useful input (`adjust`) rather than grounds to stop
+(`abort`). Arguably defensible, and long documented as a known flake.
+
+A paragraph added to the prompt while cutting the verdict set — explaining which verdicts make
+the session own the message — looked like the cause. Removing it changed nothing, 0/3 either way,
+so it was not. The likelier explanation is that dropping the fifth option concentrated
+probability on `adjust`. **Consumption semantics do not belong in this prompt regardless**: the
+step judges relevance, and telling it what the harness does with the answer invites it to
+optimise for that instead.
 
 **reflect, phi4-era baseline (qwen3.6:27b via `digest`), n=3: 7/7, no invented
 recommendations.** Slow, though: 5–10s per call, the largest single cost in a session.
@@ -396,13 +459,56 @@ answer.
 qwen3:4b is ~2.5× faster and ~8 GB smaller for one flaky case. Worth revisiting if residency
 gets tight — Qwen3 needs `think = false` here or it blows the react timeout mid-stream.
 
+### `adjust`: 5 pass · 0 unstable · 1 fail, and two defects worth knowing
+
+**It was judging information it could not see.** The prompt asks whether *the new information*
+has opened a gap, and the whole premise of the step is that something arrived mid-session — but
+`adjust` never declared `mid_session_messages`. Shown no arrival, the model judged the only thing
+in front of it, the original task, whose "Still unknown" list reads exactly like a to-do list.
+**The eval cases had the same hole**, carrying no arrival either, so the suite measured a state
+production never produces. Fifth instance of eval/live drift.
+
+Adding the block alone was close to a wash: `research-empty-do-not-retry` went 0/3 → 2/3, and
+`facts-gathered-now-needs-thinking` went 3/3 → **1/3**, because with a fresh question visible the
+model reached for `research` to answer it. That is the third confirmed appearance of the failure
+below, and the documented lever fixed it — `needs_fact` / `needs_thought` decoded between
+`finished` and `steps` took the suite to **5 pass · 0 unstable · 1 fail**, every judgement case
+3/3.
+
+Note the two schema corrections do different jobs and both are needed. `finished` leads because
+sharing `schedule`'s schema wholesale made the step prejudge that *something* was wanted and never
+return empty. The booleans sit after it because once it does decide to add work, it picks
+`research` whatever the gap is. Gating first, then discriminating.
+
+**The remaining failure is `no-budget-left`, and production no longer depends on it.** Asked with
+an exhausted budget, the step queues research anyway, 0/3 across every revision. Whether another
+step fits is *countable*, so the session now skips `adjust` entirely when the budget cannot cover
+one — the same rule that keeps mention detection out of a model's hands. The case is kept rather
+than deleted because "does the model respect a stated constraint" is worth knowing, and the
+answer is no.
+
+### Two supervisor concerns that turned out not to exist
+
+Both were written into the roadmap while the supervisor was being designed and never revisited.
+Recorded rather than deleted, because each holds only for a reason that could change.
+
+**Concurrent knowledge writes cannot race in-process.** `node:sqlite` is `DatabaseSync` and there
+is no `await` between the gatekeeper's `findEntry` and `createEntry`, so nothing interleaves. It
+*can* race across processes — two daemons pointed at one instance directory share the file — so
+the unique-constraint failure is now caught and turned into an append. **If that driver is ever
+swapped for an async one, the in-process guarantee disappears with it.**
+
+**Two `update` calls cannot overlap.** `await Promise.allSettled([stepRun, updateRun])` blocks the
+loop until both settle, so the next step — and therefore the next possible check — cannot begin.
+Combined with `judged`, each arrival is ruled on exactly once.
+
 ### Open failure: `schedule` reaches for `research` by default
 
 Measured at n=3 over 7 cases: 4 pass, 1 unstable, 2 fail. The failures share one cause, and it
 is not the one the first two cases suggested.
 
-**`research` is the generic "do some work" option; `reason` and `draft` are effectively never
-chosen.** Every failing case picks `research`:
+Confirmed three times now — here, and twice in `adjust`. **`research` is the generic "do some
+work" option; `reason` and `draft` are effectively never chosen.** Every failing case picks `research`:
 
 - `opinion-no-steps` — "sqlite or flat files, which would you pick?" → research 0/3
 - `deliberation-wants-reason` — "suggest something better than your gut reaction" → research 0/3
@@ -666,8 +772,26 @@ events not arriving, or the adapter dropping them — and without this there is 
 which. Events arriving at all means the app subscription is fine and the problem is here;
 nothing arriving means the bot is not in the channel or is not subscribed to `message.*`.
 
-Slack is also the first surface where weighted participation has real multi-participant
-channels to run against; it is still `enabled = false`.
+Slack is the first surface where weighted participation has real multi-participant channels to
+run against, and it is now on.
+
+**Two instances are running side by side** — `galatea` and `nephele`, separate agent names,
+aliases, and `working_dir`s, one daemon each. They do not double-answer and their session
+numbering cannot collide, because an instance is a self-contained directory.
+
+**An instance seeing another instance as an ordinary participant is intended, not a defect.** It
+is the same rule as the Slack adapter not filtering other bots: the agent does not need to know
+whether it is talking to a human. The behaviour that follows is the wanted one — a human and one
+instance going back and forth keeps that instance engaged through the follow-up multiplier, while
+a third instance, having said little, has its damping rise and is more likely to interject with a
+different view. Mentions and relevance drive engagement; crowding damps it.
+
+Note what the arithmetic actually does, though, because it is not quite "crowded rooms are
+quieter". `damping = fairShare / agentShare`, clamped to 2. More participants lowers `fairShare`,
+but an agent that has said little also has a tiny `agentShare`, and the ratio pins to the cap. A
+near-silent agent in a six-person room therefore sits at `damping = 2`, the same as in a
+three-person one. Crowding only bites once the agent is *already* talking. Whether that is the
+intended shape is worth deciding deliberately rather than reading off the formula.
 
 ## Tools
 
@@ -728,9 +852,37 @@ a prompt, which makes it a prompt-injection surface, and it wants deciding on pu
 | `review` | digest | — | always |
 | `debrief` | digest | — | only when messages arrived mid-session |
 | `impression` | digest | — | every N impressions, in a maintenance session |
+| `plan` | reasoning | none | chosen by `schedule`, and every continuation iteration |
 
-`schedule` picks from them. `reason` deliberately has no tools: it exists to think, and a tool loop would turn it back into
-research. `draft` writes a first pass with notes for `respond` to sharpen.
+`schedule` picks from them. `draft` writes a first pass with notes for `respond` to sharpen.
+
+### Tool access is the difference between the working steps
+
+Not *whether* a step has tools — which tools. An earlier note here claimed `reason` deliberately
+had none; that was an invention, and harness.md says the opposite: it is "expected to make use of
+tools to note ideas, perhaps review outside data, but primarily to think about the question at
+hand."
+
+| step | internal reads | web | writes |
+|---|---|---|---|
+| `research` | yes | **yes** | knowledge store |
+| `reason` | yes | no | files |
+| `plan` | yes | no | files |
+| `draft` | yes | no | **none** |
+| `respond` | knowledge only | no | none |
+
+Internal reads are `knowledge_search`, `knowledge_read`, `file_list`, `file_read`,
+`session_list`, `session_read`.
+
+**Reaching outward is what makes `research` `research`.** Everything else works from what the
+agent already has, which is what keeps `reason` thinking rather than gathering — the distinction
+the old "no tools" note was reaching for and got wrong.
+
+**`draft` writes nothing at all**, because the draft *is* its output and a step with somewhere
+else to put work has two places for it to end up.
+
+**`reason` and `plan` can write files**, because thinking that leaves nothing behind cannot be
+built on — and because a plan that names artifacts needs something able to produce them.
 
 ## Tools
 
@@ -858,6 +1010,117 @@ job, not the worse prompt.
 
 Untested on `fast`. If a closing digest call proves too slow, moving it is a role-table change —
 and would need re-measuring, because the shape above is exactly what might not survive it.
+
+## Cross-session planning
+
+`store/planStore.ts`, the `plan` step, and the `current_plan` block. What lets the agent work on
+something over days instead of answering each message in isolation.
+
+**Per channel**, like history, reflection, and the last-session pointer. A channel therefore has
+at most one active plan — two goals in one room displace each other. That is a real limitation
+and a deliberate one: per-goal plans need a key nothing else in the system has, and there is no
+evidence yet that one-per-channel is the binding constraint. The layout is a directory of
+revisions, so adding a goal key later does not mean rewriting what is stored.
+
+**Revisions are append-only and sealed 0444**, like step output. `plan_0.md`, `plan_1.md`, … each
+records what changed and why, and `plan.json` points at the current one. A plan that overwrote
+itself would lose the record of how it drifted — the same reason impressions sit beside an
+identity rather than inside it, and it matters more here because a plan *directs* future work.
+
+**One writer, enforced in code.** `writePlanRevision` is called by the harness for the configured
+`plan_step`'s output and nowhere else. No tool writes plans, so a step cannot revise one on its
+own authority — the same arrangement as knowledge writes going through the gatekeeper, and
+enforced the way `no_tools` is rather than by asking a prompt nicely.
+
+### Closing is the load-bearing part
+
+**A plan nothing can close becomes a standing instruction the agent cannot escape.** It would be
+read into every future session indefinitely, directing work at something finished months ago. So
+`fulfilled` and `abandoned` both make `loadPlan` return nothing, and `current_plan` reads as
+absent — while the revisions themselves survive, because closing is not deleting.
+
+`abandoned` exists separately so a plan that turned out to be wrong can be dropped rather than
+pursued to exhaustion. The prompt says that abandoning is a good outcome, not a failure to
+report, because a model asked to close its own plan will otherwise keep it alive on the grounds
+that a little more could always be done.
+
+**`status` decodes before `outstanding`**, so the model commits to whether the plan is running
+before listing what is left — a model that writes a list of remaining work first will not then
+declare the plan finished.
+
+**An unparsed revision is a no-op, not a default.** The fallback returns an empty goal and the
+harness skips the write entirely. Falling back to *something* would let a parse failure close a
+plan or replace its goal.
+
+**Measured: 8/8, n=3, 0 unstable.** Both closing directions hold — `fulfilled` when the work is
+done, `abandoned` when the goal is overtaken, `active` when progress is not completion — and
+`outstanding` empties on close, carries remaining items forward otherwise, and `changed` is
+always written.
+
+**55–120s per call, and that is thinking, not contention.** `plan` runs on `reasoning` with
+thinking left on, and this file already records what that costs: turning it off for `respond` cut
+a session from ~77s to ~18s. The figures are what a deliberative `reasoning` call costs here.
+
+The first explanation reached for was stray daemons holding the models — wrong, and the third
+time in this project that a slow measurement was blamed on the environment before the ordinary
+explanation was checked. **Check whether thinking is on before blaming the machine.**
+
+That leaves a real decision rather than a mystery: `plan` is genuinely deliberative, which is the
+best case for thinking, but it runs while somebody waits for a reply. `think = false` on
+`[steps.plan]` is a one-line change and has not been measured against the suite.
+
+### It loads `schedule`, which was already the weakest step
+
+`plan` is a fourth `selectable_step`, and `schedule` already reaches for `research` by default and
+effectively never picks `reason` or `draft`. Adding an option to a choice that is not
+discriminating well is a real risk, so the suite is re-run against the change rather than
+assumed — see below. The prompt states the distinction that matters: `plan` is for the *course of
+work*, not for a question that merely happens to be large, because a plan is a commitment later
+sessions act on unprompted.
+
+## Continued work
+
+`session/continuation.ts`, a `continuation` trigger, and `[session.continuation]`. After a reply
+goes out, the agent carries on with whatever the plan still has outstanding — one iteration at a
+time, each a full session of its own.
+
+**A continuation is a new session, not a longer one.** The session is the unit of budget,
+tracing, sealed output, and reflection; one that ran for an hour would break all four. It also
+makes "resume after handling the incoming message" free — a continuation is just another session
+on the channel's drain, so an arrival simply gets there first.
+
+### Progress is counted, never judged
+
+The design this replaced had a step that assessed its own progress, with careful third-person
+framing because **a model asked whether it made progress says yes**. Once `plan` exists that step
+is unnecessary: an iteration either closed an outstanding item or it did not, and that is a fact
+about two plan revisions. Countable facts are settled in code here — the same rule as mention
+detection — and this one removes the most defensive judgement in the whole design.
+
+It also collapses "the progress judgement *is* the status update" into something simpler than one
+call with two uses: `plan.changed` is written once by the step that revises the plan, and serves
+as both the record and the report. There is no second place for the two to disagree.
+
+**Every gate is countable**, and `shouldContinue` holds all of them:
+
+- a reply actually went out — background work on a message the agent declined to answer is work
+  nobody asked for;
+- a plan is running with items left;
+- nothing is queued for the channel, because a waiting message outranks background work and may
+  change the plan anyway;
+- the last iteration closed at least one item;
+- the iteration cap is not reached.
+
+**Closing the plan is reported to the channel that asked**, prefixed `Finished:` or `Dropping:`.
+A plan that quietly dies is worse than one that never started, because somebody is still waiting.
+Abandoning is reported in the same breath as finishing, deliberately: dropping a plan that turned
+out to be wrong is a result.
+
+**`respond` is refused in a continuation**, as in a maintenance session, and neither becomes the
+session `reflect` reflects on — there is no exchange in either.
+
+Reaching the iteration cap leaves the plan **active**, not failed. It simply stops being pushed,
+so the next real exchange can revive or close it.
 
 ## Knowledge compaction
 

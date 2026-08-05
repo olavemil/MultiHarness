@@ -1,16 +1,19 @@
 {
   "step": "debrief",
-  "note": "`debrief` runs only when messages arrived while the session was working. Its load-bearing output is `unanswered`: a question can arrive mid-session, be noticed by the supervisor, and then be lost when the session finishes the task it was already committed to. Nothing else in the system would ever notice. The negative cases matter as much — an invented omission is read by the next session and acted on, so remarks, thanks, and things the reply already covered must come back empty.",
+  "note": "`debrief` runs when messages arrived while the session was working. Its load-bearing output is `unanswered`, and the distinction that governs it is whether the session *took the message on*: `adjust` and `respond_now` mean it changed course because of the arrival and now owns it, while `continue` and `abort` leave the message queued for a session of its own. Reporting the latter as unanswered raises an alarm about a message already in hand — seen live, where the note was stale before anything read it.",
   "cases": [
     {
       "id": "question-never-answered",
-      "note": "The clear case. A second person asks something unrelated to the running task, the session carries on and answers the original question, and nobody ever answers theirs.",
-      "message": { "from": "olav", "text": "harness, what node version does this project target?" },
+      "note": "The clear case. A second person asks something unrelated to the running task, the session carries on and answers the original question, and nobody ever answers theirs. The session re-scheduled around this message — it owns it — and then never addressed it.",
+      "message": {
+        "from": "olav",
+        "text": "harness, what node version does this project target?"
+      },
       "arrivals": [
         {
           "author": "kari",
           "text": "while you're at it — has the staging box been rebooted since friday?",
-          "verdict": "continue"
+          "verdict": "adjust"
         }
       ],
       "completed": [
@@ -24,13 +27,16 @@
     },
     {
       "id": "names-the-question-still-owed",
-      "note": "Same case, checking the entry says what is owed rather than merely that something is.",
-      "message": { "from": "olav", "text": "harness, what node version does this project target?" },
+      "note": "Same case, checking the entry says what is owed rather than merely that something is. The session re-scheduled around this message — it owns it — and then never addressed it.",
+      "message": {
+        "from": "olav",
+        "text": "harness, what node version does this project target?"
+      },
       "arrivals": [
         {
           "author": "kari",
           "text": "while you're at it — has the staging box been rebooted since friday?",
-          "verdict": "continue"
+          "verdict": "adjust"
         }
       ],
       "completed": [
@@ -46,9 +52,16 @@
     {
       "id": "arrival-was-answered",
       "note": "The follow-up arrived and the reply covers it. Being noticed and being answered are different things, and this is the case where they coincide.",
-      "message": { "from": "olav", "text": "harness, what node version does this project target?" },
+      "message": {
+        "from": "olav",
+        "text": "harness, what node version does this project target?"
+      },
       "arrivals": [
-        { "author": "olav", "text": "and why that one rather than 20?", "verdict": "adjust" }
+        {
+          "author": "olav",
+          "text": "and why that one rather than 20?",
+          "verdict": "adjust"
+        }
       ],
       "completed": [
         {
@@ -62,52 +75,107 @@
     {
       "id": "remark-between-others",
       "note": "Not addressed to the agent and not a question to it. Reporting this as owed would have the next session answer a conversation it was not part of.",
-      "message": { "from": "olav", "text": "harness, what node version does this project target?" },
+      "message": {
+        "from": "olav",
+        "text": "harness, what node version does this project target?"
+      },
       "arrivals": [
-        { "author": "kari", "text": "erik, lunch at 12?", "verdict": "continue" },
-        { "author": "erik", "text": "works for me", "verdict": "continue" }
+        {
+          "author": "kari",
+          "text": "erik, lunch at 12?",
+          "verdict": "continue"
+        },
+        {
+          "author": "erik",
+          "text": "works for me",
+          "verdict": "continue"
+        }
       ],
-      "completed": [{ "name": "respond", "content": "Node 22 or newer." }],
+      "completed": [
+        {
+          "name": "respond",
+          "content": "Node 22 or newer."
+        }
+      ],
       "field": "unanswered",
       "mode": "empty"
     },
     {
       "id": "bare-acknowledgement",
       "note": "Politeness owes nothing. The same distinction `reflect` has to hold for `no_signal`.",
-      "message": { "from": "olav", "text": "harness, what node version does this project target?" },
-      "arrivals": [{ "author": "olav", "text": "perfect, thanks", "verdict": "continue" }],
-      "completed": [{ "name": "respond", "content": "Node 22 or newer." }],
+      "message": {
+        "from": "olav",
+        "text": "harness, what node version does this project target?"
+      },
+      "arrivals": [
+        {
+          "author": "olav",
+          "text": "perfect, thanks",
+          "verdict": "continue"
+        }
+      ],
+      "completed": [
+        {
+          "name": "respond",
+          "content": "Node 22 or newer."
+        }
+      ],
       "field": "unanswered",
       "mode": "empty"
     },
     {
       "id": "carries-nothing-when-nothing-owed",
       "note": "`carry_forward` is read and acted on by the next session, so an invented note is worse than none. Empty is the ordinary answer.",
-      "message": { "from": "olav", "text": "harness, what node version does this project target?" },
-      "arrivals": [{ "author": "olav", "text": "perfect, thanks", "verdict": "continue" }],
-      "completed": [{ "name": "respond", "content": "Node 22 or newer." }],
+      "message": {
+        "from": "olav",
+        "text": "harness, what node version does this project target?"
+      },
+      "arrivals": [
+        {
+          "author": "olav",
+          "text": "perfect, thanks",
+          "verdict": "continue"
+        }
+      ],
+      "completed": [
+        {
+          "name": "respond",
+          "content": "Node 22 or newer."
+        }
+      ],
       "field": "carry_forward",
       "mode": "empty"
     },
     {
       "id": "carries-the-owed-question-forward",
-      "note": "The other direction: something genuinely went unanswered, and the next session is the only thing that can pick it up.",
-      "message": { "from": "olav", "text": "harness, what node version does this project target?" },
+      "note": "The other direction: something genuinely went unanswered, and the next session is the only thing that can pick it up. The session re-scheduled around this message — it owns it — and then never addressed it.",
+      "message": {
+        "from": "olav",
+        "text": "harness, what node version does this project target?"
+      },
       "arrivals": [
         {
           "author": "kari",
           "text": "separately, can you look at why the nightly backup keeps failing?",
-          "verdict": "continue"
+          "verdict": "adjust"
         }
       ],
-      "completed": [{ "name": "respond", "content": "Node 22 or newer." }],
+      "completed": [
+        {
+          "name": "respond",
+          "content": "Node 22 or newer."
+        }
+      ],
       "field": "carry_forward",
       "mode": "nonempty"
     },
     {
       "id": "abort-for-something-urgent",
       "note": "Cutting the session short was right here. The judgement is the only look anything ever takes at a supervisor verdict, so it has to be able to say a stop was correct as well as wrong.",
-      "message": { "from": "olav", "text": "harness, can you research our caching options?" },
+      "message": {
+        "from": "olav",
+        "text": "harness, can you research our caching options?"
+      },
       "arrivals": [
         {
           "author": "olav",
@@ -116,9 +184,59 @@
         }
       ],
       "completed": [
-        { "name": "research", "topic": "caching options", "content": "# Research\n\n_(cancelled)_" }
+        {
+          "name": "research",
+          "topic": "caching options",
+          "content": "# Research\n\n_(cancelled)_"
+        }
       ],
       "field": "unanswered",
+      "mode": "empty"
+    },
+    {
+      "id": "carried-past-is-not-unanswered",
+      "note": "An arrival the session merely carried on past is left in the inbox and gets a session of its own, so it is not owed an answer from this one. Straight from a live run, where it was reported unanswered while the next session was already answering it.",
+      "message": {
+        "from": "olav",
+        "text": "harness, what is the difference between a mutex and a semaphore?"
+      },
+      "arrivals": [
+        {
+          "author": "olav",
+          "text": "which one would you use for a connection pool?",
+          "verdict": "continue"
+        }
+      ],
+      "completed": [
+        {
+          "name": "respond",
+          "content": "A mutex has ownership — only the locking thread unlocks it — and protects a critical section. A semaphore has no ownership and counts access to a pool of resources."
+        }
+      ],
+      "field": "unanswered",
+      "mode": "empty"
+    },
+    {
+      "id": "carried-past-carries-nothing-forward",
+      "note": "An arrival the session merely carried on past is left in the inbox and gets a session of its own, so it is not owed an answer from this one. Straight from a live run, where it was reported unanswered while the next session was already answering it.",
+      "message": {
+        "from": "olav",
+        "text": "harness, what is the difference between a mutex and a semaphore?"
+      },
+      "arrivals": [
+        {
+          "author": "olav",
+          "text": "which one would you use for a connection pool?",
+          "verdict": "continue"
+        }
+      ],
+      "completed": [
+        {
+          "name": "respond",
+          "content": "A mutex has ownership — only the locking thread unlocks it — and protects a critical section. A semaphore has no ownership and counts access to a pool of resources."
+        }
+      ],
+      "field": "carry_forward",
       "mode": "empty"
     }
   ]

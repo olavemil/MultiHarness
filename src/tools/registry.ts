@@ -1,4 +1,6 @@
+import { fileList, fileRead, fileWrite } from "./files/index.ts";
 import { knowledgeRead, knowledgeSearch, knowledgeWrite } from "./knowledge.ts";
+import { sessionList, sessionRead } from "./sessions.ts";
 import { fetchUrl } from "./web/fetchUrl.ts";
 import { wikipediaSearch } from "./web/wikipedia.ts";
 import type { AnyTool } from "./types.ts";
@@ -10,6 +12,11 @@ const ALL: readonly AnyTool[] = [
   knowledgeWrite,
   fetchUrl,
   wikipediaSearch,
+  fileList,
+  fileRead,
+  fileWrite,
+  sessionList,
+  sessionRead,
 ];
 
 const REGISTRY = new Map(ALL.map((tool) => [tool.name, tool]));

@@ -6,6 +6,10 @@ export interface Adjustment {
   reason: string;
   /** Whether the work already done is enough to reply from. */
   finished: boolean;
+  /** Something checkable is missing — a fact that exists outside this conversation. */
+  needs_fact: boolean;
+  /** The difficulty is working something out, not looking something up. */
+  needs_thought: boolean;
   steps: { step: string; topic: string }[];
 }
 
@@ -34,7 +38,17 @@ export const adjust: ModelStep<Adjustment> = {
   name: "adjust",
   defaultRole: "fast",
   // Unlike `schedule`, this one has finished work to read.
-  contextBlocks: ["incoming_message", "recent_messages", "prior_step_output", "reflection"],
+  // `mid_session_messages` is the whole premise of this step and was missing.
+  // The prompt asks whether the *new* information has opened a gap; without the
+  // block the model never saw what arrived, so it judged the only thing in
+  // front of it — the original task — and re-queued more of the same work.
+  contextBlocks: [
+    "incoming_message",
+    "mid_session_messages",
+    "recent_messages",
+    "prior_step_output",
+    "reflection",
+  ],
   outputFile: "adjust.md",
   buildSchema: (config: Config) => {
     const selectable = config.session.selectable_steps;
@@ -43,9 +57,22 @@ export const adjust: ModelStep<Adjustment> = {
         ? z.object({ step: z.enum(selectable as [string, ...string[]]), topic: z.string() })
         : z.object({ step: z.string(), topic: z.string() });
 
+    // Field order carries two separate corrections, both measured.
+    //
+    // `finished` leads because sharing `schedule`'s schema wholesale made this
+    // step prejudge that *something* was needed and never return empty; putting
+    // the "is anything left?" question first took it from 2 pass to 4.
+    //
+    // `needs_fact` / `needs_thought` then sit between it and `steps`, because
+    // once the step does decide to add work it reaches for `research` whatever
+    // the gap is — measured here on `facts-gathered-now-needs-thinking`, and the
+    // same failure `schedule` has. These are not prejudging: `finished` has
+    // already gated whether anything is added at all.
     return z.object({
       reason: z.string(),
       finished: z.boolean(),
+      needs_fact: z.boolean(),
+      needs_thought: z.boolean(),
       steps: selectable.length > 0 ? z.array(chosen) : z.array(chosen).max(0),
     }) as z.ZodType<Adjustment>;
   },
@@ -54,6 +81,8 @@ export const adjust: ModelStep<Adjustment> = {
   fallback: () => ({
     reason: "Adjustment could not be parsed; proceeding to the reply.",
     finished: true,
+    needs_fact: false,
+    needs_thought: false,
     steps: [],
   }),
 

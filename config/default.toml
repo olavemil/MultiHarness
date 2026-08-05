@@ -85,6 +85,9 @@ last_review = 700
 last_session_summary = 500
 last_reflection = 700
 reflection = 700
+# Read by several steps every session, so it has to stay short. If this budget
+# ever bites, the plan has too many outstanding items to be actionable anyway.
+current_plan = 500
 incoming_message = 600
 # One paragraph plus open points. Generous enough that truncation would mean the
 # restatement went wrong, not that the budget is tight — and truncating this
@@ -100,7 +103,7 @@ entry_step = "react"
 #
 # Choosing between these is `plan`'s job, not react's — so a named message
 # still skips the react call entirely and goes straight to structuring.
-selectable_steps = ["research", "reason", "draft"]
+selectable_steps = ["research", "reason", "draft", "plan"]
 # Restates the incoming message as a self-contained request before anything acts
 # on it. "Could you draft a plan for this?" gives a step a pronoun with no
 # referent; recent_messages is a transcript rather than a brief, so every step
@@ -119,6 +122,30 @@ closing_steps = ["summarize", "review"]
 # judge whether cutting the session short was the right call. That judgement is
 # the only look anything ever takes at a supervisor verdict. Set "" to disable.
 debrief_step = "debrief"
+# Writes and revises the channel's durable, cross-session plan. The only step
+# whose output the harness applies to channels/<id>/plans/ — no tool can write a
+# plan, so a step cannot revise one on its own authority. Set "" to disable.
+plan_step = "plan"
+# --- Continued work ----------------------------------------------------------
+# After a reply goes out, carry on with whatever the plan still has outstanding.
+# One iteration at a time, each a full session of its own — the session is the
+# unit of budget, tracing and sealed output, and a session that ran for an hour
+# would break all three.
+#
+# Every gate is countable and none is asked of a model: a reply actually went
+# out, a plan is running with items left, nothing is queued for the channel, the
+# last iteration closed at least one item, and the cap is not reached. Progress
+# is the difference between two plan revisions, so "have I made progress?" —
+# the question a model always answers yes to — is never asked.
+#
+# `respond` is refused here whatever `steps` says. A continuation reports by
+# closing the plan, and its `changed` line is the report.
+
+[session.continuation]
+enabled = true
+steps = ["reason"]
+max_iterations = 3
+
 max_wallclock_ms = 900000
 # Wallclock alone never bounded anything: it is checked between steps, so one
 # research call with a 600s timeout could overrun a 900s session by itself.
@@ -157,12 +184,18 @@ impression_threshold = 5
 # and speaking unprompted into a quiet channel would be the agent talking to
 # itself.
 #
-# Off by default. Turning it on moves synthesis off the session tail; leaving it
-# off keeps the old behaviour exactly, so no capability depends on this setting.
+# On. Turning it off moves impression synthesis back onto the session tail, so
+# no capability depends on this setting either way.
+#
+# idle_ms is 5 minutes rather than 15: this has never fired outside a test, and
+# a shorter quiet period means it actually runs. Raise it if maintenance starts
+# interrupting the rhythm of a channel — the sweep already skips a channel that
+# is draining or has anything in its inbox, so the risk is wasted digest calls,
+# not a collision.
 
 [session.maintenance]
-enabled = false
-idle_ms = 900000
+enabled = true
+idle_ms = 300000
 # "impression" synthesises a person's summary once enough new observations have
 # accumulated. "compact" merges one knowledge entry that has three or more
 # separate notes under it — the most-appended one, one entry per session, so a
@@ -180,10 +213,13 @@ timeout_ms = 30000
 
 [steps.respond]
 role = "reasoning"
-# Read-only knowledge access. Off by default: a tool loop costs an extra model
-# round trip per call on the reply path, and there is nothing in the store until
-# a step starts writing. Turn on once `research` is populating it.
-# tools = ["knowledge_search", "knowledge_read"]
+# Read-only knowledge access. On now that `research` writes to the store and
+# `compact` tidies it — the condition this was waiting for.
+#
+# It costs an extra model round trip per reply, so this is the first line to
+# comment out if replies start feeling slow. `respond` is on the latency path
+# and nothing else here is.
+tools = ["knowledge_search", "knowledge_read"]
 # Thinking dominates wallclock on this model — ~75s of reasoning for a ~45-token
 # chat reply — and ollama excludes it from eval_count, so it is invisible in the
 # token figures. Writing a reply from work earlier steps already did does not
@@ -205,23 +241,74 @@ timeout_ms = 30000
 role = "fast"
 timeout_ms = 30000
 
+# Tools, per harness.md: "expected to make use of tools to note ideas, perhaps
+# review outside data, but primarily to think about the question at hand."
+#
+# The line between `reason` and `research` is not "tools or no tools" — it is
+# *which* tools. `reason` gets everything internal: the knowledge store it is
+# meant to draw on, its own files, and its own past sessions, so it can look at
+# what it concluded before rather than re-deriving it. It gets no web access,
+# which is what keeps it thinking rather than gathering, and it can write files,
+# because thinking that leaves nothing behind cannot be built on.
 [steps.reason]
 role = "reasoning"
 timeout_ms = 600000
+tools = [
+  "knowledge_search",
+  "knowledge_read",
+  "file_list",
+  "file_read",
+  "file_write",
+  "session_list",
+  "session_read",
+]
 
+# Internal reads only, and no writes at all: the draft *is* the output, and a
+# step that could write elsewhere would have two places to put its work.
 [steps.draft]
 role = "reasoning"
 timeout_ms = 600000
+tools = [
+  "knowledge_search",
+  "knowledge_read",
+  "file_list",
+  "file_read",
+  "session_list",
+  "session_read",
+]
+
+# Internal reads so a plan is written against what actually exists — the files
+# it names, the knowledge already recorded, what earlier sessions decided — plus
+# file writes, since setting out work often means sketching the thing itself.
+# No web: deciding what to do is not a gathering task.
+[steps.plan]
+role = "reasoning"
+timeout_ms = 600000
+tools = [
+  "knowledge_search",
+  "knowledge_read",
+  "file_list",
+  "file_read",
+  "file_write",
+  "session_list",
+  "session_read",
+]
 
 [steps.research]
 role = "reasoning"
 # Thinking stays on here: this is the step it exists for. Generous timeout — a
 # tool loop with a reasoning model is the slowest thing in a session.
 timeout_ms = 600000
+# Every read tool including the external ones, and the only step that may offer
+# something to the knowledge store. Reaching outward is what distinguishes it.
 tools = [
   "knowledge_search",
   "knowledge_read",
   "knowledge_write",
+  "file_list",
+  "file_read",
+  "session_list",
+  "session_read",
   "wikipedia_search",
   "fetch_url",
 ]
@@ -283,12 +370,22 @@ thread_mode = "separate"
 # --- Weighted participation ---------------------------------------------------
 # Damps the agent's tendency to dominate a channel. Each reply can look locally
 # justified while the agent still talks far more than its share; only a view
-# across the window can see that. Off by default — enabling it makes the
-# decision stochastic, so run `npm run eval` with it disabled when judging a
-# prompt change.
+# across the window can see that.
+#
+# On. It can only ever suppress a reply, never cause one, and being named skips
+# the draw entirely — so the worst case is the agent staying quiet in a busy
+# room when it had something to add. A two-person channel lands on damping 1.0
+# naturally, so DMs and the CLI are unaffected.
+#
+# Every factor, the probability, and the draw are written to
+# trace/participation.json. Without that, "why didn't it answer me?" would be
+# unanswerable, which is the reason this is safe to leave on.
+#
+# It does not affect `npm run eval`: the runner calls steps directly rather than
+# through runSession, so the draw never happens there.
 
 [session.participation]
-enabled = false
+enabled = true
 base = 0.3
 mention = 1.0
 followup_multiplier = 2.5

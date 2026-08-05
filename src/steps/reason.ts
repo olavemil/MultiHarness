@@ -14,8 +14,15 @@ const schema = z.object({
 }) as z.ZodType<Thoughts>;
 
 /**
- * Extended reasoning over what is already gathered. No tools: this step exists
- * to think, and a tool loop would turn it back into research.
+ * Extended reasoning over what is already gathered.
+ *
+ * **The line against `research` is which tools, not whether.** harness.md has
+ * this step "expected to make use of tools to note ideas, perhaps review outside
+ * data, but primarily to think about the question at hand", and an earlier note
+ * here claiming it deliberately had none was an invention. It gets the internal
+ * set — knowledge, its own files, its own past sessions — and no web access,
+ * which is what keeps it thinking rather than gathering. It can write files,
+ * because thinking that leaves nothing behind cannot be built on.
  */
 export const reason: ModelStep<Thoughts> = {
   kind: "model",
@@ -31,7 +38,6 @@ export const reason: ModelStep<Thoughts> = {
   ],
   outputFile: "thoughts.md",
   buildSchema: () => schema,
-  defaultTools: [],
 
   fallback: () => ({
     thinking: "Reasoning produced no usable result this session.",

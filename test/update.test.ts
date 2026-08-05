@@ -40,7 +40,7 @@ describe("runUpdate", () => {
     expect(prompt).toContain("does not exist");
   });
 
-  it("constrains the verdict to the five the harness can apply", async () => {
+  it("constrains the verdict to the four the harness can apply", async () => {
     const { server } = await update([verdict("continue")]);
     const format = server.requests[0]?.body.format as {
       properties: { verdict: { enum: string[] } };
@@ -50,8 +50,7 @@ describe("runUpdate", () => {
       "adjust",
       "abort",
       "respond_now",
-      "defer_to_session",
-    ]);
+          ]);
   });
 
   it("continues when it cannot be parsed — work underway has been paid for", async () => {

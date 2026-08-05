@@ -5,7 +5,7 @@ import { runSession } from "../src/session/run.ts";
 import { maintenanceTrigger, messageTrigger } from "../src/core/trigger.ts";
 import type { Config } from "../src/config/schema.ts";
 import { ensurePaths, resolvePaths } from "../src/store/paths.ts";
-import { mockOllama, reply, type MockOllama, type MockReply } from "./helpers/mockOllama.ts";
+import { mockOllama, reply, toolCall, type MockOllama, type MockReply } from "./helpers/mockOllama.ts";
 import { tempWorkingDir, testConfig, testHistory, testIdentity, testMessage } from "./helpers/fixtures.ts";
 
 const REACTION = (respond: boolean) =>
@@ -394,6 +394,10 @@ describe("runSession", () => {
     const ADJUSTED = JSON.stringify({
       reason: "the question changed; think rather than look further",
       finished: false,
+      // The booleans sit between `finished` and `steps`: once the step decides
+      // to add work it otherwise reaches for `research` whatever the gap is.
+      needs_fact: false,
+      needs_thought: true,
       steps: [{ step: "reason", topic: "work out the implication" }],
     });
     const THOUGHTS = JSON.stringify({ thinking: "…", conclusion: "…", uncertainties: [] });
@@ -460,6 +464,41 @@ describe("runSession", () => {
     const debriefPrompt = server.requests[7]?.body.messages?.[0]?.content ?? "";
     expect(debriefPrompt).toContain("actually, why that one?");
     expect(debriefPrompt).toContain("adjust");
+  });
+
+  it("runs respond with the knowledge tools it ships with", async () => {
+    // The fixture strips these so mechanics tests can count their calls; this
+    // is the one place the shipped configuration is exercised. Without it,
+    // turning tools on in `config/default.toml` would be untested everywhere.
+    const { result, server } = await run(
+      [
+        reply(REACTION(true)),
+        // The loop: ask for a tool, then answer without one to end it, then a
+        // final schema-shaped call over the transcript of what came back.
+        toolCall("knowledge_search", { query: "node version" }),
+        reply("Nothing in the store about this."),
+        reply(RESPONSE),
+        reply(REVIEW),
+      ],
+      testMessage(),
+      (c) => ({
+        ...c,
+        steps: {
+          ...c.steps,
+          respond: { ...c.steps["respond"], tools: ["knowledge_search", "knowledge_read"] },
+        },
+      }),
+    );
+
+    expect(result.reply).toBe("Node 22 or newer.");
+    // Gather first, unconstrained, then answer under the schema over what came
+    // back: constrained decoding and tool calling cannot both be in force.
+    expect(server.requests).toHaveLength(5);
+    expect(server.requests[1]?.body.tools?.length).toBeGreaterThan(0);
+    expect(server.requests[1]?.body.format).toBeUndefined();
+    expect(server.requests[3]?.body.format).toBeDefined();
+    expect(server.requests[3]?.body.tools).toBeUndefined();
+    expect(server.requests[3]?.body.messages?.[0]?.content).toContain("What the tools returned");
   });
 
   it("numbers sessions monotonically", async () => {

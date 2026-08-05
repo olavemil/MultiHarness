@@ -35,7 +35,24 @@ export interface MaintenanceTrigger {
   steps?: readonly string[];
 }
 
-export type Trigger = MessageTrigger | MaintenanceTrigger;
+/**
+ * Carrying on with an unfinished plan after a reply has gone out.
+ *
+ * A separate session rather than a longer one: the session is the unit of
+ * budget, tracing, sealed output, and reflection, and a session that ran for an
+ * hour would break all four. It also makes "resume after handling the incoming
+ * message" fall out for free — a continuation is just another queued session,
+ * and the per-channel drain already serialises them.
+ */
+export interface ContinuationTrigger {
+  kind: "continuation";
+  channelId: string;
+  /** Which iteration this is, from 1. Capped so a plan cannot run forever. */
+  iteration: number;
+  reason: string;
+}
+
+export type Trigger = MessageTrigger | MaintenanceTrigger | ContinuationTrigger;
 
 export const messageTrigger = (message: InboundMessage): MessageTrigger => ({
   kind: "message",
@@ -53,6 +70,12 @@ export const maintenanceTrigger = (
   reason,
   ...(steps ? { steps } : {}),
 });
+
+export const continuationTrigger = (
+  channelId: string,
+  iteration: number,
+  reason: string,
+): ContinuationTrigger => ({ kind: "continuation", channelId, iteration, reason });
 
 /** The message a session was triggered by, when it was triggered by one. */
 export const triggeringMessage = (trigger: Trigger): InboundMessage | undefined =>
