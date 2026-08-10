@@ -225,21 +225,54 @@ export interface EmbedResult {
 }
 
 /** Unused until the knowledge store's gatekeeper prefilter lands. */
+export interface EmbedOptions extends ChatCallOptions {
+  /** Passed through to ollama untouched, as on the chat path. */
+  keepAlive?: number | string | undefined;
+  options?: Record<string, unknown> | undefined;
+}
+
+/**
+ * Three things this used to drop, all harmless while the `embed` role was
+ * unused and none of them harmless once `core/standing.ts` put it on the reply
+ * path:
+ *
+ * - **`keep_alive` was never sent**, so `[roles.embed] keep_alive = -1` did
+ *   nothing and ollama unloaded the model on its own five-minute default. The
+ *   config said pinned and `ollama ps` said four minutes from now.
+ * - **`options` was never sent**, so `num_ctx` could not be set at all. The
+ *   model loaded at its default 32768 and sat at **5.8 GB resident** against a
+ *   639 MB file — the KV cache, as always — which is what actually consumed the
+ *   headroom the role table budgeted at "<1 GB".
+ * - **`AbortSignal.timeout` counts wallclock across suspension**, the exact
+ *   failure `model/deadline.ts` exists to prevent. A laptop sleeping mid-embed
+ *   reported the embedding model blowing its deadline.
+ */
 export async function embed(
   host: string,
   model: string,
   input: string | string[],
-  opts: ChatCallOptions,
+  opts: EmbedOptions,
 ): Promise<EmbedResult> {
-  const signals = [AbortSignal.timeout(opts.timeoutMs)];
+  const deadline = createDeadline(opts.timeoutMs);
+  const signals = [deadline.signal];
   if (opts.signal) signals.push(opts.signal);
 
-  const response = await fetch(new URL("/api/embed", host), {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ model, input }),
-    signal: AbortSignal.any(signals),
-  });
+  let response: Response;
+  try {
+    response = await fetch(new URL("/api/embed", host), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model,
+        input,
+        ...(opts.keepAlive !== undefined ? { keep_alive: opts.keepAlive } : {}),
+        ...(opts.options ? { options: opts.options } : {}),
+      }),
+      signal: AbortSignal.any(signals),
+    });
+  } finally {
+    deadline.release();
+  }
 
   if (!response.ok) {
     throw new OllamaError(

@@ -232,11 +232,27 @@ so the real ceiling is **~36 GB**, not 48.
 | `fast` | `phi4:latest` | 11 GB @ 8k | pinned. On the latency path — react, gatekeeper, `update`. |
 | `reasoning` | `qwen3.6:27b` | 17 GB @ 16k | pinned. Primary in-step worker. |
 | `digest` | `qwen3.6:27b`, thinking off | shared | empty tool allowlist, enforced by the harness. Re-splitting to a dedicated model is a role-table change only. |
-| `embed` | `qwen3-embedding:0.6b` | <1 GB | pinned. Gatekeeper prefilter; unused so far. |
+| `embed` | `qwen3-embedding:0.6b` | 2.1 GB @ 2k | pinned. Gatekeeper prefilter and `standing`. |
 
 **Measured, not estimated:** 28 GB resident against a ~36 GB Metal ceiling. Resident size runs
 well above file size — phi4 is 9.1 GB on disk and 11 GB loaded, because KV cache is included.
 Raising `num_ctx` therefore costs real headroom.
+
+**`embed` is the cautionary case, and it was invisible until the role was used.** 639 MB on disk,
+and it loaded at its default 32768 context for **5.8 GB resident** — the figure in this table said
+"<1 GB", which was the file size. Nobody had checked, because until `core/standing.ts` the role
+was configured and never called. Three defects surfaced together the moment it ran:
+
+- **`keep_alive` was never sent.** `embed()` posted `{model, input}` only, so `[roles.embed]
+  keep_alive = -1` did nothing — config said pinned, `ollama ps` said four minutes from now, and
+  every quiet channel paid a cold load of the model on its next reply.
+- **`options` was never sent either**, so `num_ctx` could not be set at all.
+- **`AbortSignal.timeout` rather than `model/deadline.ts`**, the one failure that file exists to
+  prevent, on a call that is now in the reply path.
+
+Fixed, and measured after: **2048 context, 2.1 GB, pinned.** 3.7 GB back, on a machine where the
+third model would not otherwise fit. **A role that nothing calls is not configured, only
+described** — the numbers beside it are claims until something exercises them.
 
 `fast` is a judgement role, not a mechanical one. Measured on five addressed/not-addressed
 react cases: `phi3.5:3.8b` 2/5 at 0.7s (treats any @mention as itself — it is not reading),
@@ -471,12 +487,69 @@ naively made a timeout *pass* every negative case — `other-thread-absent` was 
 Any new eval dimension needs the same care: the failure value must not coincide with a valid
 answer.
 
+**The same hazard with the opposite sign sat beside it for months.** A *fallback* — two failed
+schema validations — also returns the documented default, and `react`'s is `verdict: "reply"`, so
+it passed every **positive** case for free. `verdictFor` discounted errors and not fallbacks.
+Invisible while every model tested produced zero of them; `gemma4:e4b-mlx` produces several per
+run, and rescoring took it from 14 pass · 3 unstable to **11 pass · 6 unstable**. Both are
+discounted now. **A guard written for one direction of a symmetric failure is half a guard.**
+
 **Measured, 3 runs per case, after the reorder:**
 
 | model | score | avg | resident |
 |---|---|---|---|
 | `phi4:latest` | 10/10 | ~2.7s | 11 GB |
 | `qwen3:4b` (think off) | 9/10, 1 flaky | ~1.1s | ~3 GB |
+
+**Re-measured on the current 18 cases, n=5, run sequentially with every other model stopped, and
+with `think` controlled:**
+
+| model | think | per case | score |
+|---|---|---|---|
+| `phi4:latest` | n/a — no thinking mode | **1.08s** | **18 pass · 0 unstable · 0 fail** |
+| `gemma4:e4b` | off | 1.73s | 17 pass · 0 unstable · 1 fail |
+| `gemma4:e4b` | on | 3.77s | 17 pass · 1 unstable · 0 fail |
+| `gemma4:e4b-mlx` | off | ~2.5s | 11 pass · 6 unstable · 1 fail |
+| `gemma4:e4b-mlx` | on | ~8.8s | 11 pass · 7 unstable · 0 fail |
+
+**`fast` stays on phi4**, but the margin is 1.6×, not the 3.5× the first measurement claimed.
+
+**That first measurement did not control for thinking, and this file already said to.** `--think`
+exists on the eval runner precisely because qwen3:4b needed it here, and it was not passed.
+Thinking is **2.18× of gemma4's wallclock** — the whole apparent gap. Outside benchmarks rating
+gemma4 the faster model were right, and the harness was measuring a thinking model against one
+with no thinking mode at all.
+
+**So `[roles.fast]` must set `think` explicitly.** Left unset, the field is omitted from the
+request and the behaviour is decided by the model, the build, the client, and the ollama version —
+`ollama run` and `/api/chat` disagree for the same MLX build. A role whose latency depends on four
+things outside the config cannot be profiled, and any shipped profile inherits the same problem.
+
+**gemma4's one loss is `open-question-recent-unrelated`**, the open-question gate in plain
+`none_recent` — the same seam three prompt revisions have broken on phi4. A specific weakness at
+a known-hard discrimination, not a general one.
+
+**MLX is worse on every axis and cannot hold the output shape.** It produces fallbacks in every
+run where phi4 and the GGUF build produce none — two failed schema validations, then the
+documented default. It also destabilises `reply_target`, the *other* `fast` call: resolving fewer
+targets routes more messages as "replies to nothing", so `situation.ts` picks a different fragment
+before `react` reads the question. **A weaker fast model does not merely answer worse; it changes
+which question gets asked.**
+
+**Three probes were too narrow today and each produced a confident wrong answer**: a suspected
+download confound (real overlap, not the cause — the clean re-run was 3% *faster*); "MLX ignores
+`think` over the API" (from a trivial prompt the model simply answered; on a real one it is 2×
+slower with thinking on); and the first latency comparison itself. **Isolate the measurement, do
+not check one confounder and call it isolated.**
+
+All four standing cases match across both models, as they must — that judgement is code now, and
+a model swap cannot reach it. **Every judgement moved out of the prompt is one fewer thing a
+profile can break**, which is the practical argument for doing it.
+
+**The `~2.7s` in the older table above is stale** — the same step measures ~0.5s per call today,
+`reply_target` included. Two runs a day apart cannot say why (ollama version, freed headroom from
+the `embed` fix, or the original figure taken under load), so it is recorded as unexplained
+rather than attributed. Re-measure the baseline before comparing anything against it.
 
 qwen3:4b is ~2.5× faster and ~8 GB smaller for one flaky case. Worth revisiting if residency
 gets tight — Qwen3 needs `think = false` here or it blows the react timeout mid-stream.
@@ -636,9 +709,35 @@ An invented correction is worse than an invented critique — the session's whol
 the question is built from it — so the prompt leads with "usually it was not misread", the
 fallback is empty, and three of the five cases assert emptiness.
 
-**reflect, n=3, 12 cases: 12 pass · 0 unstable · 0 fail**, ~10s. All five correction cases pass,
+**reflect, n=3, 14 cases: 14 pass · 0 unstable · 0 fail**, ~10s. All five correction cases pass,
 including `dissatisfied-but-understood` — the answer was too long, the question was understood,
 and the correction stays empty.
+
+### Judging the room by your own silence
+
+Seen live alongside the standing failure above, and the more compounding of the two. `reflect`
+asks how the previous *session* landed — but a session that declined to reply **is** the previous
+session, so after a run of declines it reads a review of no answer, a summary with no answer in
+it, and no `request.md` at all. Everything it has to go on is its own silence, and it starts
+assessing the incoming message for whether anyone remarked on that.
+
+`last_contribution` answers the question nothing was asking: what the agent *actually said* here
+last, and how long ago. `store/channelStore.ts` scans the whole history rather than tailing it,
+deliberately — an agent that has been quiet is exactly the case where its last contribution has
+already left the window, so a `readRecent` slice would answer "you have said nothing" precisely
+when the answer matters.
+
+**It is a fallback, and that is load-bearing.** Rendered unconditionally it quoted the agent's own
+reply immediately before asking whether that reply landed, which primes `satisfied`: `new-subject`
+and `prior-reflection-carried` both fell to 2/3, answering `satisfied` for an acknowledgement
+followed by an unrelated question, with the priming visible in the model's own reasoning. Quoting
+only where nothing else supplies it — the agent stayed quiet, and the exchange it last joined has
+moved out of reach — took the suite back to 14/14. **A block that duplicates what other blocks
+already carry is not free even when it is accurate.**
+
+The prompt also says not to read the conversation for remarks about the silence: people rarely
+comment on someone not speaking, and looking for it turns an ordinary exchange into one that
+appears to be about the agent.
 
 This is the first field here to measure clean on its first run, and it is not luck: the "lead
 with the affirmative, make it terminal, keep the empty answer easy" pattern was applied from the
@@ -754,6 +853,81 @@ just as well as `reply`. One added sentence — the situation settles whether a 
 wanted, the four outcomes only spell out *how* silence is spelled — took it back to 3/3.
 
 **Measured after that: 13 pass · 0 unstable · 0 fail.**
+
+### Standing in a conversation, and the one thing phi4 cannot read
+
+Seen live: two instances in a channel, and the second declines everything it was not the previous
+speaker in. Its own reasons name the cause — *"does not directly address or question the agent"*,
+*"nor does it refer back to anything previously said by the agent"*. Both are the prompt working
+as written. `none_recent` tested **back-reference** and `other_recent` ended with, verbatim:
+
+> Two other people picking up a subject the agent once raised is a conversation it started, not
+> one it is owed a place in.
+
+That is the assistant frame surviving one level below where 4b fixed it. The verdict set was
+widened and the voice converted; the fragments still asked whether the agent had been *invoked*
+rather than whether it had **standing** — whether the message carries on a matter the agent
+itself contributed to.
+
+**Half of it is fixed and measured.** `none_recent` now asks the standing question:
+`own-topic-open-remark` **1/5 → 5/5**, with `open-question-recent` and a new negative guard both
+holding at 5/5.
+
+**The other half is a capability limit.** A boolean `own_subject`, decoded before the verdict so
+the model could not skip the question, scored **0/3 on phi4 and 3/3 on `digest`** for the same
+case. phi4 does not see that a question put to another participant continues a claim the agent
+made two messages earlier. Different from `restate`'s ambiguity failure, which survived the larger
+model — here the larger model simply answers it, at ~82s against ~2.7s on the entry step of every
+message. Not shippable as a role change.
+
+**`own_subject` was then removed, because it cost more than it bought.** It did not fix the case
+it was added for, *and* it destabilised two that were clean — at n=5, `open-question-recent`
+2/5 and `own-topic-open-remark` 3/5 with the field, **5/5 and 5/5 without it, same fragments**. A
+fifth decoded field on phi4 at 8k is not free, which is the same finding `restate` produced when
+it grew a fifth context block.
+
+**That measurement nearly went the other way, and the reason is worth keeping.** The field looked
+fine on targeted `--case` runs at n=3 and only showed its cost on the full suite at n=5 — the
+failure this file already warns about under "never judge a prompt change from a single live run",
+reached by a different route: a *narrow* run is as misleading as a short one, because the case
+that regressed was not the case being iterated on. Run the suite, not the case.
+
+### What fixed it: standing, measured by embeddings and used to route
+
+`core/standing.ts`, `[session.standing]`, and two new fragments. **18 pass · 0 unstable · 0
+fail**, with the live case at 5/5.
+
+**The question is settled in code, then stated to the prompt as fact** — the same treatment
+mention detection gets, and for the same reason: three prompt rewrites and a decoded field all
+failed at it, and the fact is computable. One batched `/api/embed` call, cosine against the
+agent's own recent turns, on the `embed` role that had been resident and unused since the
+gatekeeper prefilter was designed.
+
+**The threshold is calibrated against the suite, not chosen.** Cases needing "yes" score 0.419
+and 0.480; cases needing "no", 0.356 and 0.359. Hence 0.4 — a 0.06 margin on four points, which
+is thin, and `config/default.toml` says so. The first guess of 0.6 marked nothing at all:
+absolute cosine on short messages clusters far below 1, so the usable band is model-specific and
+has to be re-measured if `embed` is ever swapped.
+
+**Absent is not "unrelated".** A failed embed call leaves the prompt saying nothing about
+standing rather than asserting there is none — otherwise one unreachable model silences the agent
+everywhere, and the silence reads as a decision it made.
+
+**It routes; it is not another paragraph.** Fed to the existing fragments as a stated fact, it
+took `open-question-recent` to 3/5 — the third time that case has been collateral from a test
+appended after a terminal gate. phi4 at 8k cannot hold "the first gate is final" when a second
+test follows it. As a third routing axis it costs two short fragments, `none_recent_own` and
+`other_recent_own`, each asking one question, and every previously tuned fragment goes back to
+its measured wording. That is what `core/situation.ts` is *for*.
+
+Only the `recent` positions take the axis: `absent` means the agent has no subject here to
+continue, and `immediate` is already engaged.
+
+**Routing silently took coverage away, which is the trap in this design.** `open-question-recent`
+now routes to `none_recent_own`, so nothing was exercising the open-question gate in plain
+`none_recent` any more — the gate three separate revisions have broken. A new case,
+`open-question-recent-unrelated`, restores it at 5/5. **Adding a routing axis moves cases off the
+fragments they were written to test; check what each fragment still covers.**
 
 **`acknowledge` is not gated on participation.** An emoji is not a message, it does not crowd a
 channel, and damping it would leave the person with nothing at all — the outcome the verdict

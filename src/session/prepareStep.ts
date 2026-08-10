@@ -2,6 +2,7 @@ import type { Config } from "../config/schema.ts";
 import { buildContext, type BuiltContext } from "../context/builder.ts";
 import type { BlockInput } from "../context/blocks/index.ts";
 import { computeSituation, type Situation } from "../core/situation.ts";
+import { agentStanding, describeStanding, type Standing } from "../core/standing.ts";
 import { loadPrompt, SITUATIONS_DIR, type LoadedPrompt } from "../prompts/load.ts";
 import { render } from "../prompts/render.ts";
 import type { ModelStep } from "../steps/types.ts";
@@ -17,6 +18,8 @@ import type { ModelStep } from "../steps/types.ts";
 
 export interface PreparedStep {
   prompt: LoadedPrompt;
+  /** Whether the message continues the agent's own subject, when it was measured. */
+  standing?: Standing | undefined;
   /** The situation fragment actually used; `named` when the agent was addressed. */
   fragmentId?: string | undefined;
   fragment: LoadedPrompt | undefined;
@@ -59,16 +62,25 @@ export async function prepareModelStep(args: PrepareArgs): Promise<PreparedStep>
   // No message means no conversational position to route on: every fragment
   // reasons about where an *arriving message* sits relative to the agent, and a
   // maintenance session has none.
-  const situation =
-    step.situational && mention === undefined && blockInput.message !== undefined
-      ? computeSituation(
-          blockInput.message.text,
-          blockInput.history,
-          config.agent,
-          8,
-          args.replyTarget,
-        )
-      : undefined;
+  const routed =
+    step.situational && mention === undefined && blockInput.message !== undefined;
+
+  // Measured here rather than by the caller, so the eval harness and a live
+  // session cannot diverge on it — the drift this file exists to prevent.
+  const standing = routed
+    ? await agentStanding(config, blockInput.history, blockInput.message!.text)
+    : undefined;
+
+  const situation = routed
+    ? computeSituation(
+        blockInput.message!.text,
+        blockInput.history,
+        config.agent,
+        8,
+        args.replyTarget,
+        standing?.related,
+      )
+    : undefined;
 
   const fragmentId = step.situational ? (situation?.id ?? "named") : undefined;
   const fragment = fragmentId
@@ -92,13 +104,20 @@ export async function prepareModelStep(args: PrepareArgs): Promise<PreparedStep>
       : "No — the message does not name the agent.",
     mentioned_other: mentionedOther,
     budget_remaining: args.budgetRemaining ?? "Not constrained.",
-    situation: fragment ? render(fragment.text, { mentioned_other: mentionedOther }) : "",
+    standing: describeStanding(standing),
+    situation: fragment
+      ? render(fragment.text, {
+          mentioned_other: mentionedOther,
+          standing: describeStanding(standing),
+        })
+      : "",
   };
 
   return {
     prompt,
     fragment,
     situation,
+    standing,
     fragmentId,
     context,
     renderedPrompt: render(prompt.text, variables),

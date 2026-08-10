@@ -65,6 +65,17 @@ export const ParticipationConfig = z.object({
   /** Being named is not a probability. */
   mention: z.number().min(0).max(1).default(1),
   followup_multiplier: z.number().positive().default(2.5),
+  /**
+   * Applied when the arriving message continues a subject the agent has itself
+   * spoken on, as measured by `core/standing.ts`.
+   *
+   * The same signal that routes `react` to its own-subject fragment, reused
+   * here: having standing in a conversation should make the agent likelier to
+   * take part in it, not merely likelier to judge that it could. In a
+   * four-person room the crowd term alone halves every probability, which is
+   * correct for chatter and wrong for the thread the agent is actually in.
+   */
+  own_subject_multiplier: z.number().positive().default(2),
   model_yes_multiplier: z.number().positive().default(1.5),
   model_no_multiplier: z.number().positive().default(0.5),
   /** Messages examined for the agent's own share of the conversation. */
@@ -216,6 +227,26 @@ export const Config = z.object({
     // Zod 4 wants a complete default object; derive it from the schema so the
     // defaults live in exactly one place.
     participation: ParticipationConfig.default(() => ParticipationConfig.parse({})),
+    /**
+     * Whether an arriving message continues a subject the agent has itself
+     * spoken on, measured as cosine similarity against its own recent turns.
+     *
+     * Settled in code because the model could not settle it: decoded as a
+     * boolean on `fast` it scored 0/3, and on a 27B 3/3 at thirty times the
+     * latency. See `core/standing.ts`.
+     */
+    standing: z
+      .object({
+        enabled: z.boolean().default(true),
+        /**
+         * Cosine above which the message counts as the agent's subject.
+         * Calibrated against `eval/cases/react.json`, not chosen by taste.
+         */
+        threshold: z.number().min(0).max(1).default(0.4),
+        /** How many of the agent's own recent turns to compare against. */
+        turns: z.number().int().positive().default(4),
+      })
+      .default(() => ({ enabled: true, threshold: 0.4, turns: 4 })),
     /**
      * Ask a model which earlier message the incoming one replies to, and route
      * on that instead of on distance between messages. Costs one `fast` call.

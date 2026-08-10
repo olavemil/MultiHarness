@@ -25,6 +25,10 @@ received and welcome, not that it was right, and a single emoji carries far less
 An unhappy or puzzled reaction is worth as much as an approving one and should be read just as
 plainly. Nothing at all is the ordinary case and means nothing either way.
 
+## The last thing you actually said here
+
+${last_contribution}
+
 ## What the last session took the question to mean
 
 ${prior_request}
@@ -61,6 +65,15 @@ none either. `thanks` is politeness, not endorsement — treat a bare acknowledg
 Choose `satisfied` or `dissatisfied` only when the message actually reacts to the last answer:
 it acts on it, corrects it, repeats a question you already tried to answer, or says plainly
 that it did or did not help.
+
+**The last session is not always the last time you spoke.** When you chose not to reply, that
+session produced no answer for anyone to react to — so judge against the last thing you actually
+said, above, and not against the fact of having stayed quiet. A run of sessions where you
+declined leaves nothing to assess: that is `no_signal`, every time.
+
+Above all, do not read the conversation for remarks about your silence. People rarely comment on
+someone not speaking, and looking for it turns an ordinary exchange into one that appears to be
+about you. If nobody mentioned it, nothing about it happened.
 
 ## Was the question itself misread?
 

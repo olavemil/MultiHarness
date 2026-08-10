@@ -79,6 +79,16 @@ num_ctx = 16384
 [roles.embed]
 model = "qwen3-embedding:0.6b"
 keep_alive = -1
+# 639 MB on disk, and it loaded at **5.8 GB** resident before this line existed:
+# the default context is 32768 and the KV cache is included in residency, as it
+# is for every role here. That went unnoticed while the role was unused, and
+# became real the moment `core/standing.ts` put it on the reply path — it is
+# what left no headroom for a third model beside phi4 and the 27B.
+#
+# Inputs are one chat message or one knowledge candidate, so the window only has
+# to cover the longest single string, never their sum.
+[roles.embed.options]
+num_ctx = 2048
 
 # --- Context -----------------------------------------------------------------
 # Budgets are per named block, in approximate tokens. They exist for answer
@@ -195,6 +205,29 @@ acknowledge_emoji = "+1"
 #
 # `respond` is refused here whatever `steps` says. A continuation reports by
 # closing the plan, and its `changed` line is the report.
+
+# Standing: does an arriving message continue a subject the agent has itself
+# spoken on? Distinct from being addressed, and it is what a silent-but-present
+# agent needs in order to join a conversation it contributed to earlier.
+#
+# Settled in code because a model could not settle it. Decoded as a boolean on
+# `fast` it scored 0/3; a 27B scored 3/3 at ~82s against ~2.7s, on the entry step
+# of every message. A cosine similarity against the agent's own recent turns is
+# a fact the harness can establish outright, the way mention detection is.
+#
+# First use of the `embed` role outside the knowledge gatekeeper. `threshold` is
+# calibrated against eval/cases/react.json rather than chosen by taste; raising
+# it makes the agent join fewer conversations, lowering it makes it join more.
+
+[session.standing]
+enabled = true
+# 0.4 is measured, not chosen: across the react suite the cases that need
+# "yes" score 0.419 and 0.480, and those that need "no" score 0.356 and 0.359.
+# A 0.06 margin on four points is thin — re-run eval/cases/react.json before
+# trusting it further, and note the band is specific to this embedding model.
+# Absolute cosine on short messages clusters far below 1; 0.6 marked nothing.
+threshold = 0.4
+turns = 4
 
 [session.continuation]
 enabled = true
@@ -421,6 +454,19 @@ enabled = true
 base = 0.3
 mention = 1.0
 followup_multiplier = 2.5
+# Applied when the arriving message continues a subject the agent has itself
+# spoken on — the same `core/standing.ts` measurement that routes `react` to its
+# own-subject fragment, reused as a probability rather than only a prompt.
+#
+# Raised because a four-person channel showed the gap: `crowd = 2/participants`
+# halves every probability at four, which is right for chatter and wrong for the
+# thread the agent is actually in. Having standing in a conversation should make
+# it likelier to take part, not just likelier to conclude that it could.
+#
+# Stacks with `followup_multiplier` deliberately — that one is positional (the
+# agent spoke last), this one is topical, and a message that is both is the
+# strongest case there is. `max` clamps the product, so the stack saturates.
+own_subject_multiplier = 2.0
 model_yes_multiplier = 1.5
 model_no_multiplier = 0.5
 presence_window = 12

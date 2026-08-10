@@ -203,3 +203,59 @@ describe("interjectDelay", () => {
     expect(interjectDelay(off, { mentioned: false, queued: 0, rng: () => 0.5 })).toBe(0);
   });
 });
+
+describe("standing raises the odds", () => {
+  // A four-person channel halves every probability through the crowd term,
+  // which is right for chatter and wrong for the thread the agent is in. The
+  // same measurement that routes `react` to its own-subject fragment is reused
+  // here, so having standing makes the agent likelier to take part rather than
+  // only likelier to judge that it could.
+  // Four people including the agent, which halves the crowd term.
+  const room = [msg("olav"), msg("agent", true), msg("galatea"), msg("dana")];
+
+  it("doubles the probability on the agent's own subject", () => {
+    const off = responseProbability(
+      { history: room, mentioned: false, directFollowup: false, interest: 0.5 },
+      config,
+    );
+    const on = responseProbability(
+      { history: room, mentioned: false, directFollowup: false, ownSubject: true, interest: 0.5 },
+      config,
+    );
+
+    expect(on.factors.ownSubject).toBe(2);
+    expect(off.factors.ownSubject).toBe(1);
+    expect(on.probability).toBeCloseTo(off.probability * 2, 6);
+  });
+
+  it("leaves it alone when standing was not measured", () => {
+    // Undefined means the embed model was unreachable, the feature is off, or
+    // the agent has said nothing here. None of those is evidence of absence,
+    // and treating them as `false` would silently damp every channel.
+    const absent = responseProbability(
+      { history: room, mentioned: false, directFollowup: false, interest: 0.5 },
+      config,
+    );
+    const measuredFalse = responseProbability(
+      { history: room, mentioned: false, directFollowup: false, ownSubject: false, interest: 0.5 },
+      config,
+    );
+    expect(absent.probability).toBeCloseTo(measuredFalse.probability, 6);
+  });
+
+  it("never turns a draw into a certainty beyond the cap", () => {
+    // Positional and topical stack, so a follow-up on the agent's own subject
+    // saturates rather than running away.
+    const both = responseProbability(
+      { history: room, mentioned: false, directFollowup: true, ownSubject: true, interest: 1 },
+      config,
+    );
+    expect(both.probability).toBeLessThanOrEqual(1);
+    expect(both.probability).toBeGreaterThan(
+      responseProbability(
+        { history: room, mentioned: false, directFollowup: true, ownSubject: false, interest: 1 },
+        config,
+      ).probability,
+    );
+  });
+});

@@ -23,6 +23,8 @@ export interface ParticipationFactors {
   /** Presence damping: 1.0 at fair share, below 1 when over-talking. */
   damping: number;
   followup: number;
+  /** Raised when the message continues a subject the agent itself raised. */
+  ownSubject: number;
   model: number;
   /** Damping by room size, independent of how much the agent has said. */
   crowd: number;
@@ -47,6 +49,13 @@ export interface ParticipationInput {
   /** The agent's own message is the one immediately before this. */
   directFollowup: boolean;
   /**
+   * Whether this message continues a subject the agent has spoken on, from
+   * `core/standing.ts`. Undefined when it was not measured — the feature is
+   * off, the agent has said nothing here, or the embed model was unreachable —
+   * and undefined must not read as `false`.
+   */
+  ownSubject?: boolean | undefined;
+  /**
    * How much the agent has to add, 0 to 1, from `react`. Absent when the
    * step did not run — being named skips it.
    */
@@ -62,7 +71,7 @@ export function responseProbability(
 ): Participation {
   const participants = countParticipants(input.history, config.participant_window);
   const agentShare = shareOfWindow(input.history, config.presence_window);
-  const fairShare = 1 / Math.max(participants, 1);
+  const fairShare = 1 / Math.max(participants - 1, 1);
 
   // 1.0 at fair share; below 1 when the agent is talking more than its share.
   // At two participants an alternating agent sits at ~0.5 share against a 0.5
@@ -84,6 +93,13 @@ export function responseProbability(
   const crowd = clamp(2 / Math.max(participants, 2), config.crowd_min, 1);
 
   const followup = input.directFollowup ? config.followup_multiplier : 1;
+
+  // Deliberately allowed to stack with `followup`, because the two are not the
+  // same claim: `followup` is positional — the agent spoke last — and this is
+  // topical. A message that is both is the strongest case there is for
+  // replying, and `max` clamps the product anyway, so the stack saturates
+  // rather than running away.
+  const ownSubject = input.ownSubject === true ? config.own_subject_multiplier : 1;
   // Interpolated between the two multipliers rather than switched between them.
   // A boolean threw away everything the step knew: "barely worth saying" and
   // "I have a real point here" both arrived as `true`.
@@ -98,6 +114,7 @@ export function responseProbability(
     damping,
     crowd,
     followup,
+    ownSubject,
     model,
     participants,
     agentShare,
@@ -110,8 +127,15 @@ export function responseProbability(
     return { probability: config.mention, factors, forced: true };
   }
 
+  const coefficients = [damping,  crowd, followup, ownSubject, model];
+  const coefficient = coefficients.reduce((a, b) => a + b, 1) / coefficients.length;
+
   return {
-    probability: clamp(config.base * damping * crowd * followup * model, 0, config.max),
+    probability: clamp(
+      config.base * coefficient,
+      0,
+      config.max,
+    ),
     factors,
     forced: false,
   };

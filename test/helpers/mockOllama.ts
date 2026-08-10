@@ -40,7 +40,7 @@ export type MockReply =
     }
   | { kind: "status"; status: number; body: string }
   /** `/api/embed` answers with plain JSON, not the NDJSON stream. */
-  | { kind: "embed"; vector: number[] }
+  | { kind: "embed"; vectors: number[][] }
   /** An agent turn that asks for tools instead of answering. */
   | { kind: "tools"; calls: { name: string; args: Record<string, unknown> }[] };
 
@@ -54,7 +54,10 @@ export const toolCall = (name: string, args: Record<string, unknown> = {}): Mock
 });
 
 /** Convenience: an embedding response for `/api/embed`. */
-export const embedding = (vector: number[]): MockReply => ({ kind: "embed", vector });
+export const embedding = (vector: number[]): MockReply => ({ kind: "embed", vectors: [vector] });
+
+/** `/api/embed` answers a batch in one response; `standing` sends one. */
+export const embeddings = (vectors: number[][]): MockReply => ({ kind: "embed", vectors });
 
 /**
  * Stands in for ollama's `/api/chat`, serving `replies` in order. Streams the
@@ -96,7 +99,7 @@ export async function mockOllama(
 
       if (next.kind === "embed") {
         res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify({ embeddings: [next.vector] }));
+        res.end(JSON.stringify({ embeddings: next.vectors }));
         return;
       }
 

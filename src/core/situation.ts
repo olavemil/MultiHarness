@@ -9,7 +9,13 @@ export interface Situation {
   mentionsOther: string | undefined;
   distance: AgentDistance;
   /**
-   * Fragment id, `<mention>_<distance>` — e.g. `other_immediate`. Selects which
+   * Whether the message continues a subject the agent has itself spoken on,
+   * measured by `core/standing.ts`. Undefined when it was not measured.
+   */
+  ownSubject: boolean | undefined;
+  /**
+   * Fragment id, `<mention>_<distance>` — e.g. `other_immediate` — with `_own`
+   * appended where the message is on the agent's own subject. Selects which
    * question the react prompt actually asks.
    */
   id: string;
@@ -38,12 +44,31 @@ export function computeSituation(
    * distance between messages was only ever standing in for.
    */
   replyTarget?: "agent" | "other" | "nothing" | undefined,
+  /**
+   * Whether this message continues something the agent said, from
+   * `core/standing.ts`. A third routing axis rather than another paragraph in an
+   * existing fragment — measured three times, appending a second test after a
+   * terminal gate weakens the gate, and `open-question-recent` paid for it each
+   * time. One fragment asks one question; that is the whole point of routing.
+   */
+  ownSubject?: boolean | undefined,
 ): Situation {
   const mentionsOther = detectOtherMention(text, history, agent);
   const distance = replyTarget
     ? distanceFromReplyTarget(replyTarget, history, recentWindow)
     : agentDistance(history, recentWindow);
-  return { mentionsOther, distance, id: `${mentionsOther ? "other" : "none"}_${distance}` };
+
+  // Only where the agent has spoken but is not the last speaker. `absent` means
+  // it has said nothing here, so there is no subject of its own to continue;
+  // `immediate` is already engaged and needs no help deciding that.
+  const own = ownSubject === true && distance === "recent";
+
+  return {
+    mentionsOther,
+    distance,
+    ownSubject,
+    id: `${mentionsOther ? "other" : "none"}_${distance}${own ? "_own" : ""}`,
+  };
 }
 
 /**

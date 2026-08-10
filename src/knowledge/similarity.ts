@@ -33,6 +33,8 @@ export async function embedText(config: Config, text: string): Promise<number[]>
   const role = resolveRole(config, "embed");
   const result = await embed(config.ollama.host, role.model, text, {
     timeoutMs: config.ollama.request_timeout_ms,
+    ...(role.keepAlive !== undefined ? { keepAlive: role.keepAlive } : {}),
+    options: role.options,
   });
   const vector = result.embeddings[0];
   if (!vector) throw new Error(`Embedding model ${role.model} returned no vector.`);

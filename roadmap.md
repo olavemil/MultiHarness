@@ -14,7 +14,7 @@ than to rediscover.
 Built and measured: the session pipeline (`reflect → react → restate → schedule → [research |
 reason | draft] → respond → summarize → review → [impression]`), the knowledge store with its
 gatekeeper, identities with append-only impressions, five tools, CLI and Slack adapters, and
-six clean eval suites (react 13/13, reflect 12/12, gatekeeper 8/8, debrief 8/8, compact 7/7,
+six clean eval suites (react 18/18, reflect 14/14, gatekeeper 8/8, debrief 8/8, compact 7/7,
 plan 8/8) plus `restate` at 9/13.
 
 A reading of the question now survives across sessions — `prior_request` carries the previous
@@ -761,6 +761,52 @@ previously had to infer from prose.
 **Outbound is built too.** `react` returns one of four verdicts plus `interest`, `acknowledge`
 marks the message with a configured emoji, and participation takes the continuous interest in
 place of a boolean. **13 pass · 0 unstable · 0 fail.** See CLAUDE.md.
+
+### Standing, and the second agent that never joins in
+
+Live, with two instances in one channel: the one that was not the previous speaker declines
+everything. Its stated reasons — "does not directly address or question the agent", "nor does it
+refer back to anything previously said by the agent" — are the situation fragments working
+exactly as written. They tested **invocation**; what was missing is **standing**, whether the
+message continues a matter the agent itself contributed to.
+
+So the assistant frame this item diagnosed survived one level below where it was fixed. Widening
+the verdict set and converting the voice did not reach the fragments, and `other_recent` ended by
+instructing the agent to stay out of subjects it had raised.
+
+**Fixed, and the fix was embeddings.** `core/standing.ts` measures whether a message continues a
+subject the agent has itself spoken on, and `situation.ts` routes on it. **react: 18 pass · 0
+unstable · 0 fail**, with the live case at 5/5.
+
+Getting there cost three prompt rewrites and a decoded `own_subject` boolean, all of which
+failed — the boolean scored 0/3 on phi4 against 3/3 on a 27B, and destabilised two clean cases
+besides. The lesson is the one this project keeps relearning: **a computable fact belongs in
+code**, and this one is a cosine over the agent's own recent turns on the `embed` role that had
+been resident and idle since the gatekeeper prefilter was designed. See CLAUDE.md.
+
+Note what this does *not* need: any awareness of siblings. Standing is a fact about the agent's
+own transcript, so the fix stays inside one instance, as item 4 requires.
+
+### The other half: an agent that judges the room by its own silence
+
+Also seen live, and the more compounding of the two. `reflect` opens by judging how the previous
+*session* landed — but a session that declined to reply **is** the previous session, so after a
+run of declines it reads a review of no answer, a summary with no answer in it, and no
+`request.md` at all. Everything it has is its own silence, and it starts assessing the incoming
+message for whether anyone remarked on that.
+
+`last_contribution` answers the question that was never asked: what the agent *actually said* here
+last, and how long ago. It reaches past the message window deliberately — an agent that has been
+quiet is exactly the case where its last contribution has already scrolled out of view, so a
+`readRecent` slice would answer "you have said nothing" precisely when the answer matters.
+
+The prompt also tells it not to read the conversation for remarks about its silence: people
+rarely comment on someone not speaking, and looking for it turns an ordinary exchange into one
+that appears to be about the agent.
+
+**reflect: 14 pass · 0 unstable · 0 fail.** The block has to be a *fallback* to get there —
+quoting the agent's own reply unconditionally primes `satisfied` and cost two clean cases. See
+CLAUDE.md.
 
 **Still open**
 

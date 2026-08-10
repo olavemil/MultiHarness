@@ -47,6 +47,12 @@ export async function testConfig(host: string, workingDir: string): Promise<Conf
       selectable_steps: [],
       restate_step: "",
       participation: { ...config.session.participation, enabled: false },
+      // `standing` is off for a third reason again: it calls the embed model,
+      // and `mockOllama` serves the replies a test queues rather than an
+      // embedding endpoint. Left on, every situational step would wait out the
+      // ollama request timeout. `standing.test.ts` turns it back on against a
+      // server that does answer `/api/embed`.
+      standing: { ...config.session.standing, enabled: false },
     },
     // Several steps ship with tool allowlists, and each tool loop costs an extra
     // model round trip. Stripped here so mechanics tests count the calls they

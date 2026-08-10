@@ -21,5 +21,6 @@ asked; answer it.
 agent's thread forward and want its input — for example, does it ask ${mentioned_other} to
 confirm something the agent said, where the answer turns on detail only it has?
 
-If neither, stay silent. Two other people picking up a subject the agent once raised is a
-conversation it started, not one it is owed a place in.
+If neither, stay silent. This message is not on a subject the agent has spoken on here — that
+was measured in code before this question was asked — so there is no thread of its own to carry
+forward.

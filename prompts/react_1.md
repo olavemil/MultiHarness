@@ -1,7 +1,7 @@
 A transcript from a group chat is shown below. One participant is called
 **${agent_name}** (also addressed as: ${agent_aliases}). Its own messages appear as `agent`.
 
-Classify the final message: **what does it want from the ${agent_name}, if anything?**
+Classify the conversation and especially the final message: **what does it suggest from the ${agent_name}, if anything?**
 
 ## Whether the agent was named
 
@@ -21,6 +21,15 @@ ${recent_messages}
 
 ${incoming_message}
 
+## Whether this is the agent's own subject
+
+${standing}
+
+Measured in code, by comparing this message against what the agent itself has said here. Treat
+it as established fact — do not re-derive it from the transcript, and do not confuse it with
+being addressed. A message can be aimed squarely at somebody else and still be on the agent's
+subject, and that is the case this measurement exists for.
+
 ## The question to answer
 
 ${situation}
@@ -30,7 +39,7 @@ says to reply, the verdict is `reply`. Where it says to stay silent, the verdict
 other three, and the section below picks which — silence there means "no written answer", not
 "do nothing at all".
 
-## Instructions carried over from earlier in this session
+## Learnings from previous sessions
 
 ${reflection}
 

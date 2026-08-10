@@ -16,6 +16,7 @@ import { triggeringMessage, type Trigger } from "../core/trigger.ts";
 import { computeSituation } from "../core/situation.ts";
 import { drawParticipation, responseProbability } from "../core/participation.ts";
 import { resolveReplyTarget } from "./replyTarget.ts";
+import { lastContribution } from "../store/channelStore.ts";
 import { loadPriorSession, recordLastSession, type PriorSession } from "../store/priorSession.ts";
 import {
   loadPlan,
@@ -286,12 +287,17 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
   /** The plan as it stood before this session touched it, for the delta. */
   const planBefore = plan;
 
+  // Read once per session, before anything this session says is appended, so it
+  // is genuinely the *previous* contribution rather than this session's own.
+  const contribution = await lastContribution(paths, channelId);
+
   const blockInput = (): BlockInput => ({
     message,
     history,
     identity,
     completed,
     prior,
+    lastContribution: contribution,
     impressions,
     requestCorrection,
     arrivals,
@@ -466,6 +472,11 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
             mentioned: mention !== undefined,
             directFollowup:
               computeSituation(message?.text ?? "", history, config.agent).distance === "immediate",
+            // Measured by `core/standing.ts` while `react` was prepared, and
+            // reused rather than recomputed. Having standing in a conversation
+            // should make the agent likelier to take part in it, not only
+            // likelier to conclude that it could.
+            ownSubject: outcome.ownSubject,
             interest: reaction.interest,
           },
           participation,
@@ -773,6 +784,12 @@ function toolContext(ctx: ExecuteContext, stepName: string): ToolContext {
 interface StepOutcome {
   completed: CompletedStep;
   value: unknown;
+  /**
+   * Whether this message continues a subject the agent has spoken on, as
+   * measured while preparing the step. Carried out here so the participation
+   * draw can use it without a second embed call.
+   */
+  ownSubject?: boolean | undefined;
 }
 
 async function executeStep(
@@ -889,6 +906,7 @@ async function executeModelStep(
 
   return {
     value: result.value,
+    ...(prepared.standing ? { ownSubject: prepared.standing.related } : {}),
     completed: {
       name: step.name,
       topic,

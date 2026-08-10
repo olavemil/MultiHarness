@@ -29,6 +29,14 @@ export interface BlockInput {
    * send — but only `reflect` reads them.
    */
   reactions?: readonly StoredReaction[] | undefined;
+  /**
+   * What the agent itself last said in this channel, however far back.
+   *
+   * Distinct from `prior`, which is the previous *session* — and after a run of
+   * declines that session contains no reply at all, leaving `reflect` to judge
+   * an exchange from its own silence.
+   */
+  lastContribution?: { text: string; at: string; messagesSince: number } | undefined;
   /** Accumulated impressions of `identity`, oldest first. */
   impressions?: readonly { text: string }[] | undefined;
   /**

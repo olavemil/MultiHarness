@@ -2,6 +2,7 @@ import type { ContextBlock } from "./types.ts";
 import { currentPlan } from "./currentPlan.ts";
 import { identityImpressions } from "./identityImpressions.ts";
 import { knowledgeEntry } from "./knowledgeEntry.ts";
+import { lastContribution } from "./lastContribution.ts";
 import { lastDebrief } from "./lastDebrief.ts";
 import { incomingMessage } from "./incomingMessage.ts";
 import { lastReflection } from "./lastReflection.ts";
@@ -35,6 +36,7 @@ const ALL: readonly ContextBlock[] = [
   lastReview,
   lastSessionSummary,
   lastReflection,
+  lastContribution,
   lastDebrief,
   reactions,
   currentPlan,
