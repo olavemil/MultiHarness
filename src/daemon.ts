@@ -1,7 +1,18 @@
 import { consoleAttached, sharedConsole } from "./adapters/console.ts";
 import { discoverInstances, instanceRoot, selectInstances } from "./instance/discover.ts";
+import { acquireLocks } from "./instance/lock.ts";
 import { createLogger } from "./instance/log.ts";
 import { startInstance, type RunningInstance } from "./instance/run.ts";
+
+/**
+ * How long a graceful stop waits for sessions already in flight.
+ *
+ * Bounded because a `research` step on the 27B can run for minutes, and an
+ * operator who asked it to stop should not have to wait that out. Docker allows
+ * ten seconds before SIGKILL and systemd ninety, so this sits inside the
+ * tighter of the two.
+ */
+const GRACE_MS = 8_000;
 
 /**
  * One process, every agent on the machine.
@@ -26,8 +37,10 @@ import { startInstance, type RunningInstance } from "./instance/run.ts";
 async function main(): Promise<void> {
   const log = createLogger("daemon");
 
+  const args = process.argv.slice(2);
+  const force = args.includes("--force");
   // Flags belong to node, not to us; anything else is an instance name.
-  const requested = process.argv.slice(2).filter((arg) => !arg.startsWith("-"));
+  const requested = args.filter((arg) => !arg.startsWith("-"));
 
   const available = discoverInstances();
   if (available.length === 0) {
@@ -37,7 +50,14 @@ async function main(): Promise<void> {
   }
 
   const chosen = selectInstances(available, requested);
-  log.log(`starting ${chosen.map((ref) => ref.name).join(", ")}`);
+
+  // Claimed before anything starts. Two daemons over one instance directory is
+  // the case `model/lease.ts` cannot reach across and the knowledge gatekeeper
+  // is not safe under — see `instance/lock.ts`.
+  const locks = acquireLocks(chosen, force);
+  process.on("exit", () => locks.release());
+
+  log.log(`starting ${chosen.map((ref) => ref.name).join(", ")} as pid ${process.pid}`);
 
   /**
    * One process is one blast radius, so an instance that cannot start is
@@ -64,12 +84,51 @@ async function main(): Promise<void> {
   // answer, and would have been read as one.
   if (consoleAttached()) sharedConsole().ready();
 
+  /**
+   * Stop accepting, let what is in flight finish, and go.
+   *
+   * There were no signal handlers at all before this, so the OS default applied
+   * and any supervisor's SIGTERM killed the process mid-session — losing work
+   * that `RunningInstance.stop()` is written to drain. A second signal exits at
+   * once, because an operator pressing Ctrl-C twice means it.
+   *
+   * Note what this cannot help with: **Ctrl-Z stops the process**, and a stopped
+   * process runs no handlers, so a queued SIGTERM sits there until it is
+   * continued. That is not a bug to fix here — `kill -CONT` first, or use
+   * Ctrl-C.
+   */
+  let stopping = false;
+  const shutdown = async (signal: string): Promise<void> => {
+    if (stopping) {
+      log.warn(`${signal} again — exiting now, in-flight work is abandoned`);
+      process.exit(130);
+    }
+    stopping = true;
+    log.log(`${signal} — finishing in-flight sessions (up to ${GRACE_MS}ms); signal again to exit now`);
+
+    const drained = Promise.allSettled(running.map((instance) => instance.stop()));
+    const timedOut = Symbol("timeout");
+    const outcome = await Promise.race([
+      drained,
+      new Promise<typeof timedOut>((done) => setTimeout(() => done(timedOut), GRACE_MS).unref()),
+    ]);
+    if (outcome === timedOut) log.warn(`still working after ${GRACE_MS}ms; exiting anyway`);
+
+    locks.release();
+    process.exit(0);
+  };
+
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+    process.on(signal, () => void shutdown(signal));
+  }
+
   // The console is the operator's handle on the whole daemon, so ending its
   // input ends the daemon. A Slack adapter's `closed()` only ever resolves from
-  // its own `stop()`, so an all-Slack daemon runs until the process is killed —
+  // its own `stop()`, so an all-Slack daemon runs until it is signalled —
   // which is what headless means.
   await Promise.race(running.map((instance) => instance.closed()));
   await Promise.all(running.map((instance) => instance.stop()));
+  locks.release();
 }
 
 await main();

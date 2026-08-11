@@ -10,6 +10,7 @@ import { pendingMaintenance } from "../session/maintenance.ts";
 import { shouldContinue, type ProgressDelta } from "../session/continuation.ts";
 import type { Plan } from "../store/planStore.ts";
 import { runSession } from "../session/run.ts";
+import { turnQueueDepth, withTurn } from "../session/turn.ts";
 import { appendMessage, readRecent } from "../store/channelStore.ts";
 import { appendReaction, readReactions } from "../store/reactionStore.ts";
 import { loadIdentity } from "../store/identityStore.ts";
@@ -145,12 +146,71 @@ export async function startInstance(
   };
 
   async function handle(message: InboundMessage): Promise<void> {
+    const channelForTurn = channelOf(message.channelId);
+
+    // Queued behind another session. Said before the wait rather than after it,
+    // because a person watching a channel cannot tell a queue from a dead
+    // daemon, and the wait is now a whole session rather than a few seconds.
+    if (turnQueueDepth() > 0) adapter.status?.(message.channelId, "queued");
+
+    return withTurn(
+      async (waitedMs, ahead) => {
+        if (waitedMs > 1_000) {
+          log.log(
+            `waited ${Math.round(waitedMs / 1000)}s for a turn ` +
+              `(${ahead} ahead) before handling a message in ${message.channelId}`,
+          );
+        }
+        await handleWithTurn(message, channelForTurn, waitedMs);
+      },
+      { size: config.session.turn.size },
+    );
+  }
+
+  /**
+   * The session itself, with the daemon-wide turn already held.
+   *
+   * Everything that reads state happens *inside* the turn deliberately: the
+   * whole point of waiting is that the world may have changed, and a history
+   * read from before the wait would describe a conversation that has since been
+   * answered.
+   */
+  async function handleWithTurn(
+    message: InboundMessage,
+    channel: Channel,
+    queuedMs: number,
+  ): Promise<void> {
     // History is read before the triggering message is appended, so a step's
     // `recent_messages` block never contains the message it is reacting to.
-    const history = await readRecent(paths, message.channelId, HISTORY_LIMIT);
+    const stored = await readRecent(paths, message.channelId, HISTORY_LIMIT);
     const identity = await loadIdentity(paths, message.identityId, message.authorName);
     // Read alongside history, and only `reflect` declares the block.
     const reactions = await readReactions(paths, message.channelId);
+
+    // **Anything that arrived while this session queued is history, not queue.**
+    //
+    // `onMessage` only pushes to the inbox; `appendMessage` runs here. So a
+    // sibling instance's reply is not in the store until *its* handle() runs,
+    // and a session that waited its turn would otherwise re-answer a question
+    // somebody already answered — the exact failure the interject delay was
+    // built to avoid, made far likelier by a wait measured in minutes.
+    //
+    // They genuinely were said before this session began, so they belong in
+    // `recent_messages`; the rule that history never contains the message being
+    // reacted to still holds, because that one is excluded.
+    const arrivedWhileQueued = channel.inbox.filter((m) => m.id !== message.id);
+    const history = [
+      ...stored,
+      ...arrivedWhileQueued.map((m) => ({
+        id: m.id,
+        identityId: m.identityId,
+        author: m.authorName,
+        text: m.text,
+        at: m.receivedAt,
+        fromAgent: false,
+      })),
+    ];
+    const seenBeforeStart = new Set(arrivedWhileQueued.map((m) => m.id));
 
     await appendMessage(paths, message.channelId, {
       id: message.id,
@@ -161,7 +221,7 @@ export async function startInstance(
       fromAgent: false,
     });
 
-    adapter.status?.(message.channelId, "thinking");
+    const onProgress = (note: string) => adapter.status?.(message.channelId, note);
 
     // Sent the moment `respond` seals, so the person is not waiting on
     // `summarize`, `review`, and `impression` — which are retrospection and
@@ -178,7 +238,6 @@ export async function startInstance(
       await adapter.send(message.channelId, text);
     };
 
-    const channel = channelOf(message.channelId);
     channel.lastIdentity = identity;
 
     const result = await runSession({
@@ -188,16 +247,20 @@ export async function startInstance(
       identity,
       history,
       reactions,
+      onProgress,
       onReply,
       onAcknowledge: async (messageId, emoji) => {
         if (!adapter.react) return;
         await adapter.react(message.channelId, messageId, emoji);
         log.log(`acknowledged with :${emoji}: in ${message.channelId}`);
       },
+      queuedMs,
       // The session cannot see its own queue; the daemon owns it. This is what
       // triggers the supervisor, and it is empty unless someone spoke while a
-      // step was running.
-      pending: () => [...channelOf(message.channelId).inbox],
+      // step was running — anything that arrived while this session was merely
+      // *queued* is already in `history` above, and the supervisor exists to
+      // judge mid-session arrivals rather than to re-judge the past.
+      pending: () => channelOf(message.channelId).inbox.filter((m) => !seenBeforeStart.has(m.id)),
     });
     adapter.status?.(message.channelId, `session ${result.session.id}`);
 
@@ -224,7 +287,7 @@ export async function startInstance(
     if (result.reply === undefined) {
       adapter.status?.(
         message.channelId,
-        `no reply — ${result.reaction?.reason ?? "reaction did not ask for one"}`,
+        `no reply (${result.reaction?.verdict}) — ${result.reaction?.reason ?? "reaction did not ask for one"}`,
       );
     }
 
@@ -264,26 +327,36 @@ export async function startInstance(
       });
       if (!reason) return;
 
-      const history = await readRecent(paths, channelId, HISTORY_LIMIT);
-      const result = await runSession({
-        config,
-        paths,
-        trigger: continuationTrigger(channelId, iteration, reason),
-        identity,
-        history,
-        // The plan step reports through this when it closes the plan.
-        onReply: async (text) => {
-          await appendMessage(paths, channelId, {
-            id: `${channelId}-report-${iteration}-${Date.now()}`,
-            identityId: "agent",
-            author: "agent",
-            text,
-            at: new Date().toISOString(),
-            fromAgent: true,
+      // A turn per iteration, not one for the whole loop: a continuation is up
+      // to `max_iterations` full sessions, and holding the turn across all of
+      // them would starve every other instance for as long as the plan lasts.
+      const result = await withTurn(
+        async (queuedMs) => {
+          const history = await readRecent(paths, channelId, HISTORY_LIMIT);
+          return runSession({
+            config,
+            paths,
+            trigger: continuationTrigger(channelId, iteration, reason),
+            identity,
+            history,
+            queuedMs,
+            onProgress: (note) => adapter.status?.(channelId, note),
+            // The plan step reports through this when it closes the plan.
+            onReply: async (text) => {
+              await appendMessage(paths, channelId, {
+                id: `${channelId}-report-${iteration}-${Date.now()}`,
+                identityId: "agent",
+                author: "agent",
+                text,
+                at: new Date().toISOString(),
+                fromAgent: true,
+              });
+              await adapter.send(channelId, text);
+            },
           });
-          await adapter.send(channelId, text);
         },
-      });
+        { size: config.session.turn.size },
+      );
 
       delta = result.progress;
       plan = result.plan;
@@ -306,14 +379,23 @@ export async function startInstance(
     identity: Identity,
     work: { steps: string[]; reason: string },
   ): Promise<void> {
-    const history = await readRecent(paths, channelId, HISTORY_LIMIT);
-    const result = await runSession({
-      config,
-      paths,
-      trigger: maintenanceTrigger(channelId, work.reason, work.steps),
-      identity,
-      history,
-    });
+    // Nobody is waiting on it, but it must not run beside a real session — the
+    // whole point is that only one thing touches the weights at a time.
+    const result = await withTurn(
+      async (queuedMs) => {
+        const history = await readRecent(paths, channelId, HISTORY_LIMIT);
+        return runSession({
+          config,
+          paths,
+          trigger: maintenanceTrigger(channelId, work.reason, work.steps),
+          identity,
+          history,
+          queuedMs,
+          onProgress: (note) => adapter.status?.(channelId, note),
+        });
+      },
+      { size: config.session.turn.size },
+    );
     log.log(
       `maintenance session ${result.session.id} in ${channelId} ` +
         `(${work.steps.join(", ")}): ${work.reason}`,

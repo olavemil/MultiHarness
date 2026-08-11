@@ -365,7 +365,42 @@ npm install
 npm run typecheck && npm test
 npm run dev            # every instance on this machine; Ctrl-D to exit
 npm run dev galatea    # just that one
+npm run daemon         # same, with no npm between the shell and the process
+npm run stop           # SIGTERM to whatever is holding the instance locks
 ```
+
+Or in a container, which is the same daemon with the models left outside:
+
+```
+UID=$(id -u) GID=$(id -g) docker compose up
+```
+
+**The models stay on the host, and on Apple silicon that is not a preference** —
+a Linux container cannot reach Metal, so ollama runs natively and is reached over
+the network. `~/.multiharness` is bind-mounted at `/data`, so the container sees
+the instances `npm run init` already created and writes sessions back where the
+host can read them. The endpoint comes from `/data/docker.toml`, a two-line
+`$MULTIHARNESS_CONFIG` override — the outermost config layer, which is exactly
+where a property of the *machine* belongs rather than in any agent's own config:
+
+```toml
+[ollama]
+host = "http://host.docker.internal:11434"
+```
+
+Four details that are each a bug if missed, and are all in `compose.yaml` with
+their reasons: `user: "${UID}:${GID}"` or sealed 0444 output lands root-owned and
+the documented "read the session directory" workflow stops working;
+`stop_grace_period: 15s` because `GRACE_MS` is 8s and Docker's default 10s leaves
+no room to exit after draining; `stdin_open: true` or an instance with Slack
+*disabled* hits EOF on a closed stdin and the daemon exits looking like a crash;
+and **not** `restart: unless-stopped`, because "No instance started" throws and an
+always-restart policy turns a missing token into a crash loop that reads like a
+daemon bug.
+
+Measured, not assumed: `node:sqlite` works over the bind mount (the build fails
+early if the base image lacks it), files come back owned by the host user, and a
+graceful stop clears the lock.
 
 ```
 npm run init           # create an instance; verifies Slack tokens
@@ -1663,6 +1698,23 @@ which inverts what `--env-file` does: with one process per agent, an exported `S
 was a convenient override; with several, that same export would apply to *every* instance and
 silently connect them all as one bot. Verified live — galatea and nephele connect as `U0BMTBXC59C`
 and `U0BMPF0A815` from one process.
+
+**One daemon per instance directory, enforced by a lock file.** `instance/lock.ts`
+writes `daemon.pid` into each instance it claims, all-or-nothing, and refuses to
+start over a live one. This is a correctness guard rather than tidiness: two
+daemons over one directory is precisely where `model/lease.ts` cannot reach and
+the gatekeeper's read-then-write stops being atomic.
+
+**A lock also records the host that wrote it, and one from elsewhere is refused
+regardless of liveness.** PIDs are namespaced per container, so a host daemon and
+a container daemon read each other's locks as numbers from their own namespace —
+`isAlive` then answers confidently and wrongly in either direction. Found the
+expensive way: a first attempt defaulted a missing `host` field to *the reader's*
+hostname, so the container called the host daemon's lock local, found the pid dead
+in its own namespace, and started a second daemon over the same instances.
+**Unknown origin must never read as "mine"** — refusing costs one `--force` after
+a crash, which is loud and recoverable; the permissive reading costs invisible
+contention and a knowledge store with two writers.
 
 **One process is one blast radius.** An instance that cannot start is reported and skipped rather
 than taking the others down — a missing token is specific to one agent — and the per-channel

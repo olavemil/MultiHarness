@@ -22,7 +22,10 @@ export interface ParticipationFactors {
   base: number;
   /** Presence damping: 1.0 at fair share, below 1 when over-talking. */
   damping: number;
+  /** Pseudo-observations of 1.0 added by a direct follow-up; 0 when there was none. */
   followup: number;
+  /** The combined coefficient actually applied, before `ownSubject`. */
+  averaged: number;
   /** Raised when the message continues a subject the agent itself raised. */
   ownSubject: number;
   model: number;
@@ -73,13 +76,25 @@ export function responseProbability(
   const agentShare = shareOfWindow(input.history, config.presence_window);
   const fairShare = 1 / Math.max(participants - 1, 1);
 
+  // Fair share of *replies*, not of messages: the sender is not a candidate to
+  // answer their own message, so the share is split among the others. In a
+  // two-person conversation the other participant owes 100% of the answers,
+  // not 50% — which is why this divides by `participants - 1`.
+  //
   // 1.0 at fair share; below 1 when the agent is talking more than its share.
-  // At two participants an alternating agent sits at ~0.5 share against a 0.5
-  // fair share, so this lands on 1.0 with no special case for DMs.
+  // `fairShare / agentShare` is unbounded above, which broke the one assumption
+  // the rest of this function rests on: every weight lives in 0..1, so the
+  // average is a blend and the follow-up pull can only ever raise it. A ratio
+  // that reaches 2.0 made a follow-up *lower* the odds for an already-eager
+  // agent.
+  //
+  // This form stays in range and keeps the gradient a clamp would flatten:
+  // 1.0 when the agent has said nothing, 0.5 at exactly its fair share, and
+  // toward 0 as it talks past it.
   const damping = clamp(
-    fairShare / Math.max(agentShare, 1e-6),
+    fairShare / (fairShare + Math.max(agentShare, 1e-6)),
     config.damping_min,
-    config.damping_max,
+    1,
   );
 
   // Presence damping alone does not damp crowding, which is the thing it looks
@@ -92,28 +107,48 @@ export function responseProbability(
   // is unaffected and still needs no special case.
   const crowd = clamp(2 / Math.max(participants, 2), config.crowd_min, 1);
 
-  const followup = input.directFollowup ? config.followup_multiplier : 1;
-
-  // Deliberately allowed to stack with `followup`, because the two are not the
-  // same claim: `followup` is positional — the agent spoke last — and this is
-  // topical. A message that is both is the strongest case there is for
-  // replying, and `max` clamps the product anyway, so the stack saturates
-  // rather than running away.
-  const ownSubject = input.ownSubject === true ? config.own_subject_multiplier : 1;
+  const ownSubject = input.ownSubject === true ? config.own_subject_weight : 0;
   // Interpolated between the two multipliers rather than switched between them.
   // A boolean threw away everything the step knew: "barely worth saying" and
   // "I have a real point here" both arrived as `true`.
+  // Unmeasured sits at the midpoint, not at 1. With `model_yes_weight` capped
+  // into range, a maximally interested message and one whose interest was never
+  // measured both scored 1.0 — so the field could only ever lower the odds, and
+  // a step that did not run looked as good as a step that came back certain.
   const model =
     input.interest === undefined
-      ? 1
-      : config.model_no_multiplier +
-        clamp(input.interest, 0, 1) * (config.model_yes_multiplier - config.model_no_multiplier);
+      ? (config.model_no_weight + config.model_yes_weight) / 2
+      : config.model_no_weight +
+        clamp(input.interest, 0, 1) * (config.model_yes_weight - config.model_no_weight);
+
+
+
+  // **Averaged, not multiplied.** A product lets one low coefficient drag the
+  // result below every individual term: with four participants `crowd` alone
+  // held the ceiling at 0.25, so agents answered only when named. Averaging
+  // puts the result between its inputs instead, which is the stable shape.
+  const shape = [damping, crowd, model];
+  const sum = shape.reduce((a, b) => a + b, 0);
+
+  // **A direct follow-up pulls toward neutral rather than scaling.** It enters
+  // as `followup_weight` pseudo-observations of 1.0, so the coefficient moves
+  // toward 1 and can never be pushed past it however large the weight.
+  //
+  // The point is rescue, not reward: somebody has just spoken to the agent, so
+  // the room terms that were suppressing it should stop mattering so much. A
+  // crowded channel with a hogging agent sits at 0.36 and a follow-up lifts it
+  // to 0.65; the same pull *lowers* a coefficient that was already above 1,
+  // which is the deliberate half — "you were just addressed" is a reason to
+  // ignore damping, not a reason to compound an already-eager agent.
+  const followup = input.directFollowup ? config.followup_weight : 0;
+  const averaged = (sum + followup + ownSubject) / (shape.length + followup + ownSubject);
 
   const factors: ParticipationFactors = {
     base: config.base,
     damping,
     crowd,
     followup,
+    averaged,
     ownSubject,
     model,
     participants,
@@ -127,15 +162,8 @@ export function responseProbability(
     return { probability: config.mention, factors, forced: true };
   }
 
-  const coefficients = [damping,  crowd, followup, ownSubject, model];
-  const coefficient = coefficients.reduce((a, b) => a + b, 1) / coefficients.length;
-
   return {
-    probability: clamp(
-      config.base * coefficient,
-      0,
-      config.max,
-    ),
+    probability: clamp(averaged, 0, config.max),
     factors,
     forced: false,
   };

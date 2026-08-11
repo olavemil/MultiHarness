@@ -39,6 +39,10 @@ describe("the shipped configuration", () => {
   it("keeps the sub-tables separate from the keys around them", async () => {
     const { session } = await hermetic();
 
+    // One session at a time across the daemon. A schema default that duplicates
+    // the file is exactly what hides the file failing to load, so it is asserted
+    // against what the file says.
+    expect(session.turn.size).toBe(1);
     expect(session.continuation.enabled).toBe(true);
     expect(session.maintenance.enabled).toBe(true);
     expect(session.maintenance.idle_ms).toBe(300_000);

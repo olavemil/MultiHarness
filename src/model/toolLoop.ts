@@ -32,6 +32,15 @@ export interface ToolLoopRequest {
   prompt: string;
   tools: readonly AnyTool[];
   context: ToolContext;
+  /**
+   * Budget for the **whole loop**, not for each call inside it.
+   *
+   * It used to be per call, so a step configured at 600s could legitimately run
+   * for an hour across six iterations — inside a session whose entire wallclock
+   * budget was fifteen minutes. Seen live: `reason` at 1415s and `research` at
+   * 546s in one session, which starved every other call on the machine and left
+   * the following steps clamped to the dregs of the budget.
+   */
   timeoutMs: number;
   maxIterations?: number;
   signal?: AbortSignal | undefined;
@@ -55,7 +64,22 @@ export async function runToolLoop(req: ToolLoopRequest): Promise<ToolLoopResult>
   const calls: ToolCallRecord[] = [];
   let waitedMs = 0;
 
+  // Wall-clock deadline for the loop as a whole. Queued time is added back as
+  // it accrues: waiting for the lease is not this step's to pay for, exactly as
+  // the session budget treats it.
+  const startedAt = Date.now();
+  const remaining = () => req.timeoutMs - (Date.now() - startedAt - waitedMs);
+
   for (let iteration = 0; iteration < maxIterations; iteration++) {
+    const left = remaining();
+    if (left <= 0) {
+      console.warn(
+        `[tools:${req.label}] out of time after ${iteration} iteration(s); ` +
+          `continuing with what it gathered.`,
+      );
+      return { calls, transcript: renderTranscript(calls), exhausted: true, waitedMs };
+    }
+
     const request = {
       model: req.role.model,
       messages: [...messages],
@@ -64,7 +88,7 @@ export async function runToolLoop(req: ToolLoopRequest): Promise<ToolLoopResult>
       ...(req.role.keepAlive !== undefined ? { keepAlive: req.role.keepAlive } : {}),
       ...(req.role.think !== undefined ? { think: req.role.think } : {}),
     };
-    const invoke = () => chat(req.host, request, { timeoutMs: req.timeoutMs, signal: req.signal });
+    const invoke = () => chat(req.host, request, { timeoutMs: left, signal: req.signal });
 
     // Leased **per iteration**, not around the whole loop. Each iteration is one
     // call on the weights, which is what the lease is about; the tool execution

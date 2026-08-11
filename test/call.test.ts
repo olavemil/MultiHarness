@@ -58,6 +58,31 @@ describe("callModel", () => {
     expect(server.requests[0]?.body.options).toEqual({ temperature: 0.2 });
   });
 
+  it("puts the schema's keys on the wire in declaration order", async () => {
+    // The invariant four steps depend on and nothing asserted. Constrained
+    // decoding emits keys in schema order, which is why `reason` is declared
+    // before the verdict it justifies — that reordering alone took react from
+    // 9/10 to 10/10 and separately fixed `adjust`, `restate` and `plan`.
+    //
+    // Two ways it could silently break: Zod could stop preserving declaration
+    // order in `toJSONSchema`, or `JSON.stringify` could reorder on the way
+    // out. Both are checked here, against the bytes actually sent.
+    const ordered = z.object({
+      reason: z.string(),
+      verdict: z.enum(["reply", "tangent"]),
+      interest: z.number(),
+    });
+    expect(Object.keys(z.toJSONSchema(ordered).properties as object)).toEqual([
+      "reason",
+      "verdict",
+      "interest",
+    ]);
+
+    const { server } = await call([reply('{"respond":false,"steps":[]}')]);
+    const sent = JSON.stringify(server.requests[0]?.body.format);
+    expect(sent.indexOf('"respond"')).toBeLessThan(sent.indexOf('"steps"'));
+  });
+
   it("retries once with the validation error fed back, then succeeds", async () => {
     const { result, server } = await call([
       reply('{"respond":"yes","steps":[]}'), // wrong type for respond

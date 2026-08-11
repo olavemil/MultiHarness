@@ -241,6 +241,24 @@ describe("runSession", () => {
     expect(meta.parsed.verdict).toBe("reply");
   });
 
+  it("records how long each step waited for a model", async () => {
+    // The field was missing from the trace entirely, so every session read
+    // `waitedMs: 0` — the absence of a measurement, not a measurement of zero.
+    // That is unfalsifiable from the outside and it misled three separate
+    // investigations into contention, so its presence is asserted rather than
+    // assumed. `durationMs` includes it; the difference is time on the weights.
+    const { result } = await run(
+      [reply(REACTION(true)), reply(RESPONSE), reply(REVIEW)],
+      testMessage(),
+    );
+
+    for (const step of ["react", "respond"]) {
+      const meta = JSON.parse(await read(result.session.traceDir, `${step}.meta.json`));
+      expect(meta, `${step} should report queued time`).toHaveProperty("waitedMs");
+      expect(typeof meta.waitedMs).toBe("number");
+    }
+  });
+
   it("skips react even when steps remain to be chosen — schedule chooses them", async () => {
     // The whole point of splitting react and schedule: being named settles the
     // reply, so no model decides that again, and structuring is asked
@@ -310,10 +328,17 @@ describe("runSession", () => {
     );
 
     expect(server.requests[0]?.body.model).toBe("test-fast");
-    // The prompt states the mention verdict as settled fact.
-    expect(server.requests[0]?.body.messages?.[0]?.content).toContain(
-      "does not name the agent",
-    );
+
+    // And says nothing about mentions while doing it. Being named is matched in
+    // code and decides the reply without the model's help, so stating "the
+    // message does not name the agent" only teaches it to go looking for
+    // mentions on every message it sees. When the agent *is* named, the
+    // `named.md` situation fragment says so — where it is load-bearing.
+    const prompt = server.requests[0]?.body.messages?.[0]?.content ?? "";
+    expect(prompt).not.toContain("does not name the agent");
+    expect(prompt).not.toContain("Whether the agent was named");
+    // The transcript and the question it has to answer are still there.
+    expect(prompt).toContain("@dana can you take a look at the deploy?");
   });
 
   it("hands the reply over before the closing steps run", async () => {
@@ -384,6 +409,49 @@ describe("runSession", () => {
     expect(names).toContain("respond");
     expect(result.reply).toBe("Node 22 or newer.");
     expect(result.budgetStop).toContain("model calls");
+  });
+
+  it("gives the promised reply real time when the wallclock ran out", async () => {
+    // The branch above exhausts on *model calls*, where `remainingMs` is still
+    // large — so the clamp never bit and this failure hid behind a passing test
+    // for months. On wallclock exhaustion the owed `respond` was clamped to the
+    // dregs of the budget and failed on its own deadline, so the branch that
+    // exists to make sure somebody gets an answer guaranteed that nobody did.
+    // Seen live as `respond` "timed out after 1000ms".
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { dir, cleanup } = await tempWorkingDir();
+    // Each call burns 1.2s and the budget is 1s, so `react` alone *overspends*
+    // it — which is the real shape: the live failure had `research` and `reason`
+    // run for minutes, leaving `remainingMs` at zero. A budget merely *tight*
+    // would not reproduce it, because the clamp still yields a workable timeout.
+    const server: MockOllama = await mockOllama(
+      [reply(REACTION(true)), reply(RESPONSE), reply(REVIEW)],
+      { delayMs: 1_200 },
+    );
+    cleanups.push(cleanup, server.close);
+
+    const base = await testConfig(server.host, dir);
+    const config = {
+      ...base,
+      session: { ...base.session, max_wallclock_ms: 1_000 },
+    } as Config;
+    const paths = resolvePaths(config.working_dir);
+    await ensurePaths(paths);
+
+    const result = await runSession({
+      config,
+      paths,
+      trigger: messageTrigger(testMessage()),
+      identity: testIdentity(),
+      history: testHistory(),
+      rng: () => 0,
+    });
+    warn.mockRestore();
+
+    expect(result.budgetStop).toContain("wallclock");
+    // The whole point: it was late, and it answered anyway.
+    expect(result.reply).toBe("Node 22 or newer.");
+    expect(result.completed.map((s) => s.name)).toContain("respond");
   });
 
   it("re-schedules the rest of the session when the supervisor says adjust", async () => {

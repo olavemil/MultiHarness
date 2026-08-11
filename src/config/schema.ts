@@ -61,10 +61,26 @@ export const ParticipationConfig = z.object({
    * prompt change, or the model's judgement is buried under the draw.
    */
   enabled: z.boolean().default(false),
-  base: z.number().min(0).max(1).default(0.3),
+  /**
+   * Scale on the averaged coefficient. **1.0 means the weights are the
+   * probability**, which is the property the whole scheme is calibrated on:
+   * every measurement at its midpoint gives a 50% chance of replying, an agent
+   * that has been too talkative falls proportionally below that, and interest
+   * lifts it above. Lower this to make an agent quieter across the board
+   * without disturbing the balance between the weights.
+   */
+  base: z.number().min(0).max(1).default(1),
   /** Being named is not a probability. */
   mention: z.number().min(0).max(1).default(1),
-  followup_multiplier: z.number().positive().default(2.5),
+  /**
+   * How hard a direct follow-up pulls the averaged coefficient toward neutral.
+   *
+   * Not a multiplier: it enters as `w` pseudo-observations of 1.0, so the
+   * result moves toward 1 and can never be pushed past it. A larger weight
+   * pulls harder. This rescues an agent the room terms have suppressed —
+   * somebody just spoke to it, so crowding should stop mattering so much.
+   */
+  followup_weight: z.number().positive().default(2.5),
   /**
    * Applied when the arriving message continues a subject the agent has itself
    * spoken on, as measured by `core/standing.ts`.
@@ -75,9 +91,14 @@ export const ParticipationConfig = z.object({
    * four-person room the crowd term alone halves every probability, which is
    * correct for chatter and wrong for the thread the agent is actually in.
    */
-  own_subject_multiplier: z.number().positive().default(2),
-  model_yes_multiplier: z.number().positive().default(1.5),
-  model_no_multiplier: z.number().positive().default(0.5),
+  own_subject_weight: z.number().positive().default(2),
+  /**
+   * The range `interest` is mapped onto. At 0..1 the weight *is* the interest,
+   * so a step reporting 0.5 contributes 0.5 and the midpoint property holds.
+   * Narrow the range to stop the model's judgement swinging the odds so far.
+   */
+  model_yes_weight: z.number().min(0).max(1).default(1),
+  model_no_weight: z.number().min(0).max(1).default(0),
   /** Messages examined for the agent's own share of the conversation. */
   presence_window: z.number().int().positive().default(12),
   /** Messages examined to count how many people are present. */
@@ -95,8 +116,12 @@ export const ParticipationConfig = z.object({
    * named is never delayed.
    */
   interject_delay_ms: z.number().int().min(0).default(4_000),
-  damping_min: z.number().positive().default(0.25),
-  damping_max: z.number().positive().default(2),
+  /**
+   * Floor on presence damping. There is no ceiling parameter: every weight is
+   * 0..1 by construction, which is what makes the average a blend and the
+   * follow-up pull strictly upward.
+   */
+  damping_min: z.number().min(0).max(1).default(0.25),
   max: z.number().min(0).max(1).default(1),
 });
 export type ParticipationConfig = z.infer<typeof ParticipationConfig>;
@@ -235,6 +260,18 @@ export const Config = z.object({
      * boolean on `fast` it scored 0/3, and on a 27B 3/3 at thirty times the
      * latency. See `core/standing.ts`.
      */
+    /**
+     * How many sessions may run at once across the whole daemon.
+     *
+     * One, because two agents share one GPU: `model/lease.ts` serialises calls
+     * on the same model id, which leaves the case that actually bites — a 27B
+     * step in one instance starving `fast` in another. Held for a whole session
+     * and granted FIFO, so the message that arrived first is answered first
+     * rather than every session finishing late together.
+     */
+    turn: z
+      .object({ size: z.number().int().positive().default(1) })
+      .default(() => ({ size: 1 })),
     standing: z
       .object({
         enabled: z.boolean().default(true),

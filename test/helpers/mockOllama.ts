@@ -19,6 +19,15 @@ export interface MockOllama {
   host: string;
   /** Every request received, in order. */
   requests: MockRequest[];
+  /**
+   * The most requests in flight at once.
+   *
+   * The only honest way to assert *concurrency* against this server: replies are
+   * served in arrival order regardless of path, so two overlapping calls race
+   * for the same one and any timing-based assertion would be flaky rather than
+   * rigorous. This counts overlap directly.
+   */
+  maxConcurrent: () => number;
   close(): Promise<void>;
 }
 
@@ -81,11 +90,19 @@ export async function mockOllama(
 ): Promise<MockOllama> {
   const requests: MockRequest[] = [];
   const queue = [...replies];
+  let inFlight = 0;
+  let peak = 0;
 
   const server: Server = createServer((req, res) => {
     const chunks: Buffer[] = [];
     req.on("data", (c: Buffer) => chunks.push(c));
     req.on("end", async () => {
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      // `finish`, not `close`: keep-alive holds the socket open long after the
+      // response, so counting to socket close reports overlap that never
+      // happened — and a concurrency assertion that cannot fail is worthless.
+      res.on("finish", () => void inFlight--);
       const raw = Buffer.concat(chunks).toString("utf8");
       requests.push({ path: req.url ?? "", body: raw ? JSON.parse(raw) : {} });
       if (options.delayMs) await new Promise((done) => setTimeout(done, options.delayMs));
@@ -160,6 +177,7 @@ export async function mockOllama(
   return {
     host: `http://127.0.0.1:${port}`,
     requests,
+    maxConcurrent: () => peak,
     close: async () => {
       server.close();
       await once(server, "close");

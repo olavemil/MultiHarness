@@ -5,6 +5,7 @@ import type { ChannelMessage, CompletedStep, Identity, InboundMessage } from "..
 import { callModel } from "../model/call.ts";
 import { resolveStepModel } from "../model/roles.ts";
 import { runToolLoop } from "../model/toolLoop.ts";
+import { OllamaTimeout } from "../model/ollama.ts";
 import { resolveTools } from "../tools/registry.ts";
 import { openKnowledgeDb } from "../knowledge/db.ts";
 import { appendImpression, impressionCount, readImpressions } from "../knowledge/impressions.ts";
@@ -26,12 +27,15 @@ import {
 } from "../store/planStore.ts";
 import { progressBetween, type ProgressDelta } from "./continuation.ts";
 import { prepareModelStep } from "./prepareStep.ts";
+import { describeStep, describeToolUse } from "./progress.ts";
 import { runUpdate, type UpdateVerdict } from "./update.ts";
 import {
   checkBudget,
   createBudget,
   describeBudget,
+  MIN_STEP_MS,
   remainingMs,
+  workingMs,
   type Budget,
 } from "./budget.ts";
 import { getStep } from "../steps/registry.ts";
@@ -95,6 +99,23 @@ export interface RunSessionOptions {
    * daemon, which owns the inbox; a session cannot see its own queue.
    */
   pending?: (() => InboundMessage[]) | undefined;
+  /**
+   * How long this session waited for the daemon-wide turn.
+   *
+   * Recorded rather than charged: the turn is acquired before `runSession` is
+   * called, so the budget's `startedAt` already excludes it. Traced because
+   * "why was that reply slow?" is otherwise unanswerable once one session can
+   * sit behind another for minutes.
+   */
+  queuedMs?: number | undefined;
+  /**
+   * Narrates the session as it runs: which step started, and what it touched.
+   *
+   * A session is a sequence of steps each taking tens of seconds, and the only
+   * thing it used to say was "thinking" — so a long wait and a stuck daemon
+   * looked identical from outside. Presentation only; nothing reads it back.
+   */
+  onProgress?: ((note: string) => void) | undefined;
 }
 
 export interface SessionResult {
@@ -308,6 +329,34 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
       : {}),
   });
 
+  /**
+   * Appends the closing steps, once and only once.
+   *
+   * Extracted because they are appended from *inside* the step loop, so every
+   * path that leaves an iteration early has to remember to do it. Forgetting has
+   * produced a session that ran and sealed nothing three times already — and
+   * nearly a fourth, when a timed-out step learned to carry on and skipped
+   * straight past the block.
+   */
+  function queueClosingSteps(): void {
+    if (closingQueued) return;
+    closingQueued = true;
+    // `review` judges how well a reply served the person, so it has nothing to
+    // judge in an unattended session — and it has already been caught once
+    // describing a reply that did not exist. `summarize` is computed and leaves
+    // the session directory a record of what ran, which is the reason to keep it.
+    for (const name of unattended ? ["summarize"] : config.session.closing_steps) {
+      queue.push({ name, topic: "" });
+    }
+    // Only when the session was actually interrupted. Most never are, and a
+    // debrief of an uninterrupted session would be a digest call spent
+    // confirming that nothing happened.
+    if (arrivals.length > 0 && config.session.debrief_step !== "") {
+      queue.push({ name: config.session.debrief_step, topic: "" });
+    }
+    if (synthesiseImpression) queue.push({ name: "impression", topic: "" });
+  }
+
   try {
   while (queue.length > 0) {
     const next = queue.shift() as { name: string; topic: string };
@@ -337,10 +386,14 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
     const supervised = pending.length > 0 && !isEntry;
     if (supervised) for (const m of pending) judged.add(m.id);
 
+    opts.onProgress?.(`${describeStep(step.name)} - ${next.topic || "unspecified"}`);
+
     const stepRun =
       isEntry && mention !== undefined
         ? sealDirectReaction(step, mention, ctx)
         : executeStep(step, next.topic, { ...ctx, signal: cancel.signal });
+
+    if (supervised) opts.onProgress?.(describeStep("update"));
 
     const updateRun = supervised
       ? runUpdate({
@@ -361,6 +414,11 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
     // that arrives about a step state which has already advanced is still safe.
     const [settled, update] = await Promise.allSettled([stepRun, updateRun]);
 
+    if (settled.status === "fulfilled") {
+      const used = describeToolUse(settled.value.toolCalls ?? []);
+      if (used) opts.onProgress?.(used);
+    }
+
     if (settled.status === "rejected") {
       // Cancelled mid-flight leaves the partial working file, which is the
       // point of streaming to it. Close the session out rather than failing it.
@@ -371,14 +429,29 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
         // from its own directory — in a system whose first rule is trace
         // everything.
         await sealFailure(session, step.name, next.topic, settled.reason);
+
+        // **A step that ran out of time does not end the session.** Its partial
+        // output survives in the working file — which is the reason steps stream
+        // to one — so the rest of the session can carry on from what it did
+        // gather, and a reply that was promised still gets written. Killing the
+        // whole session over one slow `research` threw away the answer somebody
+        // was waiting for along with it.
+        //
+        // Only timeouts. Anything else — a transport failure, a bug — is not
+        // something the next step can work around, and continuing would turn one
+        // fault into a cascade of them, each sealing its own `failure.md`.
+        if (isTimeout(settled.reason)) {
+          const detail = settled.reason instanceof Error ? settled.reason.message : "timed out";
+          console.warn(`[session ${session.id}] ${step.name} timed out; moving on. ${detail}`);
+          opts.onProgress?.(`${describeStep(step.name)} ran out of time; carrying on`);
+          if (queue.length === 0) queueClosingSteps();
+          continue;
+        }
         throw settled.reason;
       }
       console.warn(`[session ${session.id}] ${step.name} cancelled by the supervisor.`);
       queue.length = 0;
-      if (!closingQueued) {
-        closingQueued = true;
-        for (const name of config.session.closing_steps) queue.push({ name, topic: "" });
-      }
+      queueClosingSteps();
       continue;
     }
 
@@ -650,26 +723,37 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
       // A promised reply still gets written, from whatever was gathered.
       const owed = reaction !== undefined && wantsReply(reaction) && reply === undefined;
       queue.length = 0;
-      if (owed) queue.push({ name: config.session.respond_step, topic: "" });
+      if (owed) {
+        queue.push({ name: config.session.respond_step, topic: "" });
+
+        // **And it is granted the wallclock to actually write it.** Without
+        // this the step is clamped to whatever the exhausted budget has left —
+        // effectively nothing — and fails on its own deadline, so the branch
+        // that exists to make sure somebody gets an answer guaranteed that
+        // nobody did. Seen live as `respond` "timed out after 1000ms".
+        //
+        // Overrunning the budget is the right trade here and only here: the
+        // budget bounds *work the agent chose to do*, and a reply somebody is
+        // waiting for is the one thing worth being late for.
+        const respondStep = getStep(config.session.respond_step);
+        const grant =
+          respondStep.kind === "model"
+            ? resolveStepModel(
+                config,
+                respondStep.name,
+                respondStep.defaultRole,
+                respondStep.defaultTools,
+              ).timeoutMs
+            : MIN_STEP_MS;
+        budget.maxWallclockMs = workingMs(budget) + grant;
+        console.warn(
+          `[session ${session.id}] granting ${Math.round(grant / 1000)}s past the budget to ` +
+            `write the reply it promised.`,
+        );
+      }
     }
 
-    if (queue.length === 0 && !closingQueued) {
-      closingQueued = true;
-      // `review` judges how well a reply served the person, so it has nothing to
-      // judge here — and it has already been caught once describing a reply that
-      // did not exist. `summarize` is computed and leaves the session directory
-      // a record of what ran, which is the whole reason to keep it.
-      for (const name of unattended ? ["summarize"] : config.session.closing_steps) {
-        queue.push({ name, topic: "" });
-      }
-      // Only when the session was actually interrupted. Most never are, and a
-      // debrief of an uninterrupted session would be a digest call spent
-      // confirming that nothing happened.
-      if (arrivals.length > 0 && config.session.debrief_step !== "") {
-        queue.push({ name: config.session.debrief_step, topic: "" });
-      }
-      if (synthesiseImpression) queue.push({ name: "impression", topic: "" });
-    }
+    if (queue.length === 0) queueClosingSteps();
   }
 
   } finally {
@@ -695,6 +779,14 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
       model: replyTarget.trace.model,
       fellBack: replyTarget.trace.fellBack,
       durationMs: replyTarget.trace.durationMs,
+    });
+  }
+
+  if (opts.queuedMs !== undefined && opts.queuedMs > 0) {
+    await writeParticipationTrace(session, {
+      file: "turn",
+      queuedMs: opts.queuedMs,
+      note: "Waited for the daemon-wide session turn. Excluded from the wallclock budget.",
     });
   }
 
@@ -781,9 +873,20 @@ function toolContext(ctx: ExecuteContext, stepName: string): ToolContext {
   };
 }
 
+/**
+ * Whether a step died because it ran out of time rather than because something
+ * is wrong. Only a timeout is worth carrying on from: the partial output is
+ * usable, and the next step may not need what the dead one was fetching.
+ */
+const isTimeout = (cause: unknown): boolean =>
+  cause instanceof OllamaTimeout ||
+  (cause instanceof Error && (cause.name === "TimeoutError" || /timed out/i.test(cause.message)));
+
 interface StepOutcome {
   completed: CompletedStep;
   value: unknown;
+  /** What the step's tool loop actually did, for the progress line. */
+  toolCalls?: readonly ToolCallRecord[] | undefined;
   /**
    * Whether this message continues a subject the agent has spoken on, as
    * measured while preparing the step. Carried out here so the participation
@@ -812,8 +915,10 @@ async function executeModelStep(
   const startedAtIso = new Date().toISOString();
 
   const model = resolveStepModel(config, step.name, step.defaultRole, step.defaultTools);
-  // A step must not be able to outlive the session that queued it.
-  const timeoutMs = Math.max(1_000, Math.min(model.timeoutMs, remainingMs(ctx.budget)));
+  // A step must not be able to outlive the session that queued it — but never
+  // floored into uselessness either. `checkBudget` refuses to start a step with
+  // less than `MIN_STEP_MS` left, so anything reaching here has room to work.
+  const timeoutMs = Math.max(MIN_STEP_MS, Math.min(model.timeoutMs, remainingMs(ctx.budget)));
   const prepared = await prepareModelStep({
     step,
     config,
@@ -906,6 +1011,7 @@ async function executeModelStep(
 
   return {
     value: result.value,
+    ...(toolCalls.length > 0 ? { toolCalls } : {}),
     ...(prepared.standing ? { ownSubject: prepared.standing.related } : {}),
     completed: {
       name: step.name,

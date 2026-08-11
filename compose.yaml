@@ -1,0 +1,61 @@
+# `docker compose up` — the whole harness, every agent under one daemon.
+#
+# The models stay on the host. On Apple silicon that is not a preference: a
+# Linux container cannot reach Metal, so ollama has to run natively and be
+# talked to over the network. Point `base_url` at it with the override file
+# below rather than editing anything in the image.
+
+services:
+  harness:
+    build: .
+    # `node` as pid 1 otherwise reaps nothing and signal handling is subtly
+    # wrong — and the daemon's graceful shutdown depends on SIGTERM arriving.
+    init: true
+
+    # `src/daemon.ts` drains in-flight sessions for GRACE_MS (8s) on SIGTERM.
+    # Docker's default is 10s, which leaves no room to exit afterwards.
+    stop_grace_period: 15s
+
+    # Without this the CLI adapter — used by any instance with Slack disabled —
+    # sees EOF on a closed stdin immediately, resolves `closed()`, and the daemon
+    # exits looking exactly like a crash.
+    stdin_open: true
+
+    # The operator's own uid, so session directories, `trace/`, the sqlite store
+    # and 0444-sealed output are readable on the host. Reading those by hand is
+    # the documented way to debug a session.
+    #   UID=$(id -u) GID=$(id -g) docker compose up
+    user: "${UID:-1000}:${GID:-1000}"
+
+    # Named so the daemon.pid lock says something legible when a host daemon and
+    # this one collide. PIDs are namespaced; the hostname is how they are told
+    # apart (src/instance/lock.ts).
+    hostname: multiharness
+
+    volumes:
+      # Every instance, exactly as `npm run init` created them — config, .env,
+      # knowledge, sessions, channels, identities.
+      - ${MULTIHARNESS_ROOT_HOST:-${HOME}/.multiharness}:/data
+
+      # Prompts are read from disk on every call, so mounting them lets you edit
+      # under a running daemon. Note what CLAUDE.md says about that: a step's
+      # `contextBlocks` are fixed at import, so a template that grows a variable
+      # its step does not declare fails at render time. Restart after editing, or
+      # accept that the running daemon is a different build from the one on disk.
+      # - ./prompts:/app/prompts:ro
+
+    environment:
+      MULTIHARNESS_ROOT: /data
+      # The machine's model endpoint lives here rather than in any instance's
+      # config: it is a property of the host, which is exactly what this layer is
+      # for. Create it as described in the README section below.
+      MULTIHARNESS_CONFIG: /data/docker.toml
+
+    # Linux does not resolve `host.docker.internal` on its own.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    # Deliberately not `unless-stopped`. `src/daemon.ts` throws when no instance
+    # starts — a missing token, an empty root — and an always-restart policy
+    # turns that into a crash loop that reads like a bug in the daemon.
+    restart: on-failure:3

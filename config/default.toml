@@ -219,6 +219,23 @@ acknowledge_emoji = "+1"
 # calibrated against eval/cases/react.json rather than chosen by taste; raising
 # it makes the agent join fewer conversations, lowering it makes it join more.
 
+# One session at a time across the whole daemon, granted FIFO and held for the
+# whole session.
+#
+# `model/lease.ts` already serialises calls on the same model id; this is the
+# case it cannot reach — two agents, one GPU, different models. Measured: `react`
+# on phi4 runs 1.08s idle and 19-27s while the other instance holds a 27B step,
+# and it blew its 30s timeout twice.
+#
+# The cost, stated plainly: two channels in one instance no longer run
+# concurrently either. A long `research` in one channel delays a reply in
+# another by up to a session. That is the trade for one GPU.
+#
+# Raising `size` brings the contention back in exchange for throughput.
+
+[session.turn]
+size = 1
+
 [session.standing]
 enabled = true
 # 0.4 is measured, not chosen: across the react suite the cases that need
@@ -451,9 +468,23 @@ thread_mode = "separate"
 
 [session.participation]
 enabled = true
-base = 0.3
+# 1.0 means the weights *are* the probability, which is the calibration the rest
+# of this block is built around:
+#
+#   every measurement at its midpoint  -> 50% chance of replying
+#   agent has been too talkative       -> proportionally below that
+#   agent is interested                -> proportionally above
+#
+# Turn this down to make an agent quieter everywhere without disturbing the
+# balance between the weights; that is the one knob that scales cleanly.
+base = 1.0
 mention = 1.0
-followup_multiplier = 2.5
+# Not a multiplier: a direct follow-up enters the average as this many
+# pseudo-observations of 1.0, pulling the coefficient toward neutral. Larger
+# pulls harder, and nothing can push it past 1. The intent is rescue rather
+# than reward — somebody has just spoken to the agent, so the room terms that
+# were suppressing it should stop mattering so much.
+followup_weight = 2.5
 # Applied when the arriving message continues a subject the agent has itself
 # spoken on — the same `core/standing.ts` measurement that routes `react` to its
 # own-subject fragment, reused as a probability rather than only a prompt.
@@ -462,17 +493,16 @@ followup_multiplier = 2.5
 # halves every probability at four, which is right for chatter and wrong for the
 # thread the agent is actually in. Having standing in a conversation should make
 # it likelier to take part, not just likelier to conclude that it could.
-#
-# Stacks with `followup_multiplier` deliberately — that one is positional (the
-# agent spoke last), this one is topical, and a message that is both is the
-# strongest case there is. `max` clamps the product, so the stack saturates.
-own_subject_multiplier = 2.0
-model_yes_multiplier = 1.5
-model_no_multiplier = 0.5
+own_subject_weight = 2.0
+model_yes_weight = 1.0
+# 0..1, so the weight *is* the interest and 0.5 contributes 0.5.
+model_no_weight = 0.0
 presence_window = 12
 participant_window = 24
+# No ceiling: presence damping is 1.0 when the agent has said nothing, 0.5 at
+# exactly its fair share of replies, and falls toward this floor as it talks past
+# that. Staying in 0..1 is what keeps the follow-up pull strictly upward.
 damping_min = 0.25
-damping_max = 2.0
 # Room-size damping, separate from presence damping and doing a job presence
 # damping does not: `fairShare / agentShare` pins to its cap whenever the agent
 # has said little, so without this a near-silent agent in a ten-person room is

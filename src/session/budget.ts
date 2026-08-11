@@ -50,10 +50,21 @@ export interface BudgetState {
 export const workingMs = (budget: Budget, now = Date.now()): number =>
   Math.max(0, now - budget.startedAt - budget.waitedMs);
 
+/**
+ * The least wallclock a step can be given and still have a chance.
+ *
+ * Below this the session is exhausted, not merely tight. A step clamped to the
+ * dregs of the budget cannot finish and fails on its deadline — seen live as
+ * `respond` "timed out after 1000ms", which was the old floor manufacturing a
+ * call that could never have succeeded. Truncating to the closing steps is both
+ * cheaper and honest.
+ */
+export const MIN_STEP_MS = 5_000;
+
 export function checkBudget(budget: Budget, now = Date.now()): BudgetState {
   const elapsed = workingMs(budget, now);
-  if (elapsed > budget.maxWallclockMs) {
-    return { exhausted: true, reason: `wallclock ${Math.round(elapsed / 1000)}s exceeded` };
+  if (budget.maxWallclockMs - elapsed < MIN_STEP_MS) {
+    return { exhausted: true, reason: `wallclock ${Math.round(elapsed / 1000)}s of ${Math.round(budget.maxWallclockMs / 1000)}s used` };
   }
   if (budget.modelCalls >= budget.maxModelCalls) {
     return { exhausted: true, reason: `${budget.modelCalls} model calls reached the limit` };

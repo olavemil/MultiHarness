@@ -41,31 +41,100 @@ describe("responseProbability", () => {
     expect(result.forced).toBe(true);
   });
 
-  it("lands on the base rate at fair share in a two-person channel", () => {
-    // The property that keeps DMs working with no special case: two
-    // participants, an alternating agent, damping 1.0 and crowd 1.0.
+  it("expects the other party to carry a two-person conversation", () => {
+    // Fair share is of *replies*, not of messages: nobody answers their own
+    // message, so the share is split among everyone else. With two people the
+    // other party owes 100% of the answers, so an agent alternating at 50% is
+    // at *half* its share and the damping lifts it rather than sitting neutral.
     const history = transcript(12, 6, 1);
     const result = responseProbability(
       { history, mentioned: false, directFollowup: false, interest: undefined },
       config,
     );
     expect(result.factors.participants).toBe(2);
-    expect(result.factors.damping).toBeCloseTo(1, 1);
+    expect(result.factors.fairShare).toBe(1);
+    // Half its fair share of replies, so damping sits above the 0.5 midpoint.
+    expect(result.factors.damping).toBeGreaterThan(0.5);
+    expect(result.factors.damping).toBeLessThanOrEqual(1);
     expect(result.factors.crowd).toBe(1);
-    expect(result.probability).toBeCloseTo(config.base, 1);
+    // `base` is the ceiling now — every weight is 0..1 — so the assertion is
+    // that a two-person channel beats a crowded one, not that it beats `base`.
+    const crowded = responseProbability(
+      { history: transcript(12, 6, 5), mentioned: false, directFollowup: false, interest: undefined },
+      config,
+    );
+    expect(result.probability).toBeGreaterThan(crowded.probability);
+    expect(result.probability).toBeLessThanOrEqual(config.base);
+  });
+
+  it("replies half the time when every measurement sits at its midpoint", () => {
+    // The calibration the whole scheme is built on, and the sentence to check a
+    // change against: everything average means a coin flip. Four participants
+    // puts `crowd` at 0.5, an agent holding exactly its fair share of replies
+    // puts `damping` at 0.5, and interest 0.5 maps straight through.
+    const result = responseProbability(
+      { history: transcript(12, 4, 3), mentioned: false, directFollowup: false, interest: 0.5 },
+      config,
+    );
+
+    expect(result.factors.participants).toBe(4);
+    expect(result.factors.damping).toBeCloseTo(0.5, 6);
+    expect(result.factors.crowd).toBeCloseTo(0.5, 6);
+    expect(result.factors.model).toBeCloseTo(0.5, 6);
+    expect(result.probability).toBeCloseTo(0.5, 6);
+  });
+
+  it("moves off that midpoint in the direction of each signal", () => {
+    const at = (over: Partial<Parameters<typeof responseProbability>[0]>) =>
+      responseProbability(
+        {
+          history: transcript(12, 4, 3),
+          mentioned: false,
+          directFollowup: false,
+          interest: 0.5,
+          ...over,
+        },
+        config,
+      ).probability;
+
+    const midpoint = at({});
+    // Talking more than its share pulls it down; interest pulls it up.
+    expect(at({ history: transcript(12, 9, 3) })).toBeLessThan(midpoint);
+    expect(at({ interest: 1 })).toBeGreaterThan(midpoint);
+    expect(at({ interest: 0 })).toBeLessThan(midpoint);
+    expect(at({ directFollowup: true })).toBeGreaterThan(midpoint);
+    expect(at({ ownSubject: true })).toBeCloseTo(midpoint * 2, 6);
+  });
+
+  it("gives exactly the base rate when every coefficient is neutral", () => {
+    // The average seeds at 0, so `base` means what it says. It used to seed at
+    // 1, which added ~20% invisibly and put the real floor somewhere the config
+    // did not mention.
+    // Every weight at its top: silent agent, empty room, interest 1.
+    const neutral = responseProbability(
+      { history: [], mentioned: false, directFollowup: false, interest: 1 },
+      { ...config, damping_min: 1 },
+    );
+    expect(neutral.factors.averaged).toBeCloseTo(1, 6);
+    expect(neutral.probability).toBeCloseTo(config.base, 6);
   });
 
   it("damps by room size even when the agent is at fair share", () => {
-    // Deliberate change. Presence damping is 1.0 here, so before the crowd term
-    // this returned the full base rate in a room of any size.
+    // The crowd term depends on room size alone. It no longer drives the
+    // probability under the base rate on its own — averaging is what stops any
+    // single coefficient dominating — so the assertion is against a smaller
+    // room rather than against `base`.
     const result = responseProbability(
       { history: transcript(12, 4, 2), mentioned: false, directFollowup: false, interest: undefined },
       config,
     );
+    const dm = responseProbability(
+      { history: transcript(12, 6, 1), mentioned: false, directFollowup: false, interest: undefined },
+      config,
+    );
     expect(result.factors.participants).toBe(3);
-    expect(result.factors.damping).toBeCloseTo(1, 1);
     expect(result.factors.crowd).toBeCloseTo(2 / 3, 2);
-    expect(result.probability).toBeLessThan(config.base);
+    expect(result.probability).toBeLessThan(dm.probability);
   });
 
   it("damps a quiet agent as the room grows, which presence damping does not", () => {
@@ -90,8 +159,11 @@ describe("responseProbability", () => {
     const small = quietIn(3);
     const large = quietIn(10);
 
-    // Presence damping is identical — both pinned to the cap.
-    expect(large.damping).toBeCloseTo(small.damping, 5);
+    // Presence damping is effectively identical: a silent agent sits at the top
+    // of its range whatever the room size, which is precisely why it cannot be
+    // the term that answers "is this room crowded?".
+    expect(large.damping).toBeCloseTo(small.damping, 3);
+    expect(small.damping).toBeCloseTo(1, 3);
     // The probability is not.
     expect(large.p).toBeLessThan(small.p);
   });
@@ -108,14 +180,25 @@ describe("responseProbability", () => {
     expect(quiet).toBeGreaterThan(fair);
   });
 
-  it("treats a two-person conversation as fair when alternating, with no special case", () => {
-    const history = transcript(12, 6, 1);
-    const result = responseProbability(
-      { history, mentioned: false, directFollowup: false, interest: undefined },
+  it("keeps one low coefficient from dominating the rest", () => {
+    // The failure that motivated averaging: multiplied, `crowd` alone capped a
+    // six-person room at 0.33 whatever else was true, so agents answered only
+    // when named. Averaged, a strong signal still lifts a crowded room.
+    const crowded = transcript(12, 0, 5);
+    const dull = responseProbability(
+      { history: crowded, mentioned: false, directFollowup: false, interest: 0 },
       config,
     );
-    expect(result.factors.participants).toBe(2);
-    expect(result.factors.damping).toBeCloseTo(1, 1);
+    const keen = responseProbability(
+      { history: crowded, mentioned: false, directFollowup: true, interest: 1 },
+      config,
+    );
+    expect(keen.factors.crowd).toBeLessThan(0.5);
+    // Multiplied, `crowd` alone would have capped this at 0.33 of base whatever
+    // else was true. Averaged, the strong signals still carry it well past the
+    // dull case even though the room is against it.
+    expect(keen.probability).toBeGreaterThan(dull.probability * 1.3);
+    expect(keen.factors.averaged).toBeGreaterThan(0.8);
   });
 
   it("raises the odds for a direct followup and for a model yes", () => {
@@ -125,12 +208,20 @@ describe("responseProbability", () => {
     expect(p({ ...base, directFollowup: false, interest: 1 })).toBeGreaterThan(plain);
   });
 
-  it("halves the odds on a model no without zeroing them", () => {
-    const base = { history: transcript(12, 4, 2), mentioned: false, directFollowup: false };
-    const no = p({ ...base, interest: 0 });
-    const undecided = p({ ...base, interest: undefined });
-    expect(no).toBeCloseTo(undecided * config.model_no_multiplier, 5);
+  it("lowers the odds on a model no without zeroing them", () => {
+    // No longer a halving: `model_no_weight` is averaged with the room
+    // terms rather than multiplied through, so it pulls the result down without
+    // being able to dominate it. The property that matters is unchanged — a
+    // model "no" damps the odds and never silences the agent outright.
+    const history = transcript(12, 4, 2);
+    const shared = { history, mentioned: false, directFollowup: false } as const;
+    const no = p({ ...shared, interest: 0 });
+    const neutral = p({ ...shared, interest: undefined });
+    const yes = p({ ...shared, interest: 1 });
+
     expect(no).toBeGreaterThan(0);
+    expect(no).toBeLessThan(neutral);
+    expect(yes).toBeGreaterThan(neutral);
   });
 
   it("never exceeds the configured maximum", () => {
@@ -146,8 +237,18 @@ describe("responseProbability", () => {
       { history: transcript(12, 4, 2), mentioned: false, directFollowup: true, interest: 1 },
       config,
     );
-    expect(factors).toMatchObject({ base: config.base, followup: 2.5, model: 1.5 });
+    // Everything the probability was built from, including the coefficient that
+    // was actually applied — a decision has to be explainable without anyone
+    // recomputing the formula from the factors by hand.
+    expect(factors).toMatchObject({
+      base: config.base,
+      followup: config.followup_weight,
+      model: config.model_yes_weight,
+    });
     expect(factors.agentShare).toBeCloseTo(1 / 3, 2);
+    expect(factors.averaged).toBeGreaterThan(0);
+    expect(factors.damping).toBeLessThanOrEqual(1);
+    expect(factors.crowd).toBeLessThanOrEqual(1);
   });
 });
 
@@ -210,8 +311,9 @@ describe("standing raises the odds", () => {
   // same measurement that routes `react` to its own-subject fragment is reused
   // here, so having standing makes the agent likelier to take part rather than
   // only likelier to judge that it could.
-  // Four people including the agent, which halves the crowd term.
-  const room = [msg("olav"), msg("agent", true), msg("galatea"), msg("dana")];
+  // A crowded room with a talkative agent, so doubling has headroom below the
+  // cap and the assertion is about the multiplier rather than about clamping.
+  const room = transcript(12, 8, 5);
 
   it("doubles the probability on the agent's own subject", () => {
     const off = responseProbability(
