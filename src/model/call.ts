@@ -162,7 +162,7 @@ export async function callModel<T>(req: CallRequest<T>): Promise<CallResult<T>> 
     }
 
     if (attemptNo < MAX_ATTEMPTS) {
-      messages.push({ role: "agent", content: response.content });
+      messages.push({ role: "assistant", content: response.content });
       messages.push({ role: "user", content: retryInstruction(validated.error) });
     }
   }

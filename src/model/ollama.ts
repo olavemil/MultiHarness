@@ -15,7 +15,7 @@ export interface ToolCall {
 }
 
 export interface ChatMessage {
-  role: "system" | "user" | "agent" | "tool";
+  role: "system" | "user" | "assistant" | "tool";
   content: string;
   /** Present on agent turns that asked for tools. */
   tool_calls?: ToolCall[];
