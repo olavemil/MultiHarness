@@ -14,6 +14,8 @@ import {
   testHistory,
   testIdentity,
   testMessage,
+  entryReplies,
+  promptFor,
 } from "./helpers/fixtures.ts";
 
 /**
@@ -22,12 +24,6 @@ import {
  * inferring it from the transcript separately and differently.
  */
 
-const REACTION = (respond: boolean) =>
-  JSON.stringify({
-    reason: respond ? "asked me directly" : "aimed at someone else",
-    verdict: respond ? "reply" : "for_someone_else",
-    interest: respond ? 0.9 : 0,
-  });
 const REQUEST = JSON.stringify({
   reasoning: "\"it\" refers to the import script two messages back.",
   request: "Sketch an approach for the CSV import script, in TypeScript.",
@@ -85,10 +81,11 @@ const read = (dir: string, file: string) => readFile(path.join(dir, file), "utf8
 
 describe("restate", () => {
   it("runs between the reply decision and the work, sealed as request.md", async () => {
-    const { result } = await run([reply(REACTION(true)), reply(REQUEST), reply(RESPONSE), reply(REVIEW)]);
+    const { result } = await run([...entryReplies(true).map(reply), reply(REQUEST), reply(RESPONSE), reply(REVIEW)]);
 
     expect(result.completed.map((s) => s.name)).toEqual([
-      "react",
+      "read",
+      "stance",
       "restate",
       "respond",
       "summarize",
@@ -103,33 +100,34 @@ describe("restate", () => {
     // Both, deliberately: the gap between them is the signal, and a step handed
     // only the polished version cannot see that anything was inferred.
     const { server } = await run([
-      reply(REACTION(true)),
+      ...entryReplies(true).map(reply),
       reply(REQUEST),
       reply(RESPONSE),
       reply(REVIEW),
     ]);
 
-    const respondPrompt = server.requests[2]?.body.messages?.[0]?.content ?? "";
+    const respondPrompt = promptFor(server, "respond");
     expect(respondPrompt).toContain("Sketch an approach for the CSV import script");
     expect(respondPrompt).toContain("what version of node is this project on?");
   });
 
   it("is skipped on the declining path, which is the common one", async () => {
-    const { result } = await run([reply(REACTION(false)), reply(REVIEW)]);
+    const { result } = await run([...entryReplies(false).map(reply), reply(REVIEW)]);
 
-    expect(result.completed.map((s) => s.name)).toEqual(["react", "summarize", "review"]);
+    expect(result.completed.map((s) => s.name)).toEqual(["read", "stance", "summarize", "review"]);
     await expect(read(result.session.dir, "request.md")).rejects.toThrowError();
   });
 
   it("is skipped when there is no history to boil down", async () => {
     // A first message in a channel is already self-contained; there is nothing
     // for a restatement to resolve.
-    const { result } = await run([reply(REACTION(true)), reply(RESPONSE), reply(REVIEW)], {
+    const { result } = await run([...entryReplies(true).map(reply), reply(RESPONSE), reply(REVIEW)], {
       history: [],
     });
 
     expect(result.completed.map((s) => s.name)).toEqual([
-      "react",
+      "read",
+      "stance",
       "respond",
       "summarize",
       "review",
@@ -137,7 +135,7 @@ describe("restate", () => {
   });
 
   it("is skipped when the step is configured empty", async () => {
-    const { result } = await run([reply(REACTION(true)), reply(RESPONSE), reply(REVIEW)], {
+    const { result } = await run([...entryReplies(true).map(reply), reply(RESPONSE), reply(REVIEW)], {
       tweak: (c) => ({ ...c, session: { ...c.session, restate_step: "" } }),
     });
 
@@ -150,26 +148,35 @@ describe("restate", () => {
       needs_fact: false,
       needs_thought: false,
       steps: [],
+      reaction: "eyes",
     });
 
     const { result, server } = await run(
-      [reply(REQUEST), reply(SCHEDULE), reply(RESPONSE), reply(REVIEW)],
+      [
+        ...entryReplies(true).map(reply),
+        reply(REQUEST),
+        reply(SCHEDULE),
+        reply(RESPONSE),
+        reply(REVIEW),
+      ],
       {
         message: testMessage({ text: "harness, could you sketch out how you'd do it?" }),
         tweak: (c) => ({ ...c, session: { ...c.session, selectable_steps: ["research"] } }),
       },
     );
 
-    // Named, so `react` never calls a model; `restate` is the first call made.
+    // Being named settles that the message is not ignored, not that it is
+    // answered unread — both entry steps still run, and `restate` follows them.
     expect(result.completed.map((s) => s.name)).toEqual([
-      "react",
+      "read",
+      "stance",
       "restate",
       "schedule",
       "respond",
       "summarize",
       "review",
     ]);
-    const schedulePrompt = server.requests[1]?.body.messages?.[0]?.content ?? "";
+    const schedulePrompt = promptFor(server, "schedule");
     expect(schedulePrompt).toContain("Sketch an approach for the CSV import script");
   });
 
@@ -179,7 +186,7 @@ describe("restate", () => {
     // `resolved` stays true — claiming ambiguity with nothing to name would push
     // `respond` into asking a clarifying question about nothing.
     const { result, server } = await run([
-      reply(REACTION(true)),
+      ...entryReplies(true).map(reply),
       reply("not json"),
       reply("still not json"),
       reply(RESPONSE),
@@ -187,7 +194,7 @@ describe("restate", () => {
     ]);
 
     expect(await read(result.session.dir, "request.md")).toContain("read it as written");
-    const respondPrompt = server.requests[3]?.body.messages?.[0]?.content ?? "";
+    const respondPrompt = promptFor(server, "respond");
     expect(respondPrompt).toContain("read it as written");
     expect(result.reply).toBe("Node 22 or newer.");
   });
@@ -214,32 +221,33 @@ describe("restate", () => {
     });
 
     const { server } = await run(
-      [reply(REFLECTION), reply(REACTION(true)), reply(REQUEST), reply(RESPONSE), reply(REVIEW)],
+      [reply(REFLECTION), ...entryReplies(true).map(reply), reply(REQUEST), reply(RESPONSE), reply(REVIEW)],
       { prior },
     );
 
     // reflect sees how the last session read the question...
-    const reflectPrompt = server.requests[0]?.body.messages?.[0]?.content ?? "";
+    const reflectPrompt = promptFor(server, "reflect");
     expect(reflectPrompt).toContain("Draft a plan for the scheduler rewrite");
 
     // ...and its correction reaches restate, which runs two steps later.
-    const restatePrompt = server.requests[2]?.body.messages?.[0]?.content ?? "";
+    const restatePrompt = promptFor(server, "restate");
     expect(restatePrompt).toContain("moving the worker pool");
   });
 
-  it("tells restate plainly when no correction was made", async () => {
-    // Empty is the common case and must not read as a missing variable. An
-    // invented correction is worse than an invented critique: the session's
-    // whole understanding of the question is built from it.
+  it("says nothing at all about a correction when none was made", async () => {
+    // Empty is the common case, and it is now genuinely absent rather than a
+    // sentence announcing its own absence. An invented correction is worse than
+    // an invented critique — the session's whole understanding of the question
+    // is built from it — so the prompt should not raise the subject unprompted.
     const { server } = await run([
-      reply(REACTION(true)),
+      ...entryReplies(true).map(reply),
       reply(REQUEST),
       reply(RESPONSE),
       reply(REVIEW),
     ]);
 
-    const restatePrompt = server.requests[1]?.body.messages?.[0]?.content ?? "";
-    expect(restatePrompt).toContain("no correction");
+    const restatePrompt = promptFor(server, "restate");
+    expect(restatePrompt).not.toContain("A correction to that reading");
     expect(restatePrompt).not.toContain("${");
   });
 
@@ -248,7 +256,7 @@ describe("restate", () => {
     // measured: with `request` first, `resolved` came back true on 6 of 6 runs
     // across two genuinely ambiguous cases.
     const { properties } = (await import("zod")).z.toJSONSchema(
-      restate.buildSchema({} as Config),
+      restate.buildSchema({} as Config, {} as never),
     ) as { properties: Record<string, unknown> };
 
     expect(Object.keys(properties)).toEqual(["reasoning", "resolved", "unresolved", "request"]);

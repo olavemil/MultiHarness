@@ -7,7 +7,14 @@ import { appendContent, createEntry, listEntries } from "../src/knowledge/store.
 import { embedding, mockOllama, reply, toolCall, type MockReply } from "./helpers/mockOllama.ts";
 import { testConfig } from "./helpers/fixtures.ts";
 
-const role = { name: "reasoning", model: "test-reasoning", noTools: false, exclusive: false, options: {} };
+const role = {
+  name: "reasoning",
+  model: "test-reasoning",
+  backend: "ollama" as const,
+  noTools: false,
+  exclusive: false,
+  options: {},
+};
 
 async function loop(replies: MockReply[], tools = resolveTools(["knowledge_search", "knowledge_read"])) {
   const server = await mockOllama(replies);

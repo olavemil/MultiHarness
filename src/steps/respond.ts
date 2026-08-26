@@ -14,13 +14,15 @@ export const respond: ModelStep<Response> = {
   // Both the message and the restatement, deliberately: the reply has to answer
   // the actual message in its own terms, and `unresolved` is what it asks about
   // when the conversation did not settle the request.
-  contextBlocks: [
-    "user_summary",
-    "recent_messages",
-    "incoming_message",
+  voice: "agent",
+  contextBlocks: ["incoming_message"],
+  appendix: [
+    "draft",
+    "prior_step_output",
     "request",
     "current_plan",
-    "prior_step_output",
+    "user_summary",
+    "recent_messages",
   ],
   outputFile: "response.md",
   buildSchema: () => schema,

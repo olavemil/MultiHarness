@@ -8,8 +8,12 @@ import type { ContextBlock } from "./types.ts";
 export const identityImpressions: ContextBlock = {
   name: "identity_impressions",
   keep: "tail",
+  heading: {
+    agent: "Everything you have noticed about them, oldest first",
+    observer: "Everything recorded about this person, oldest first",
+  },
   resolve: ({ impressions }) =>
     impressions && impressions.length > 0
       ? impressions.map((i) => `- ${i.text}`).join("\n")
-      : "(nothing noticed about them yet)",
+      : undefined,
 };

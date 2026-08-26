@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { callModel } from "../src/model/call.ts";
-import { OllamaError } from "../src/model/ollama.ts";
+import { ModelError } from "../src/model/transport.ts";
 import type { ResolvedRole } from "../src/model/roles.ts";
 import { mockOllama, reply, type MockReply } from "./helpers/mockOllama.ts";
 
@@ -16,6 +16,7 @@ const FALLBACK: Reaction = { respond: true, steps: ["respond"] };
 const role: ResolvedRole = {
   name: "fast",
   model: "test-model",
+  backend: "ollama",
   noTools: false, exclusive: false,
   options: { temperature: 0.2 },
 };
@@ -96,7 +97,7 @@ describe("callModel", () => {
 
     // The retry must carry the prior response and the specific error.
     const retryMessages = server.requests[1]?.body.messages ?? [];
-    expect(retryMessages.map((m) => m.role)).toEqual(["user", "agent", "user"]);
+    expect(retryMessages.map((m) => m.role)).toEqual(["user", "assistant", "user"]);
     expect(retryMessages.at(-1)?.content).toContain("respond");
   });
 
@@ -133,6 +134,6 @@ describe("callModel", () => {
   it("throws on transport failure instead of silently falling back", async () => {
     await expect(
       call([{ kind: "status", status: 500, body: "model not found" }]),
-    ).rejects.toBeInstanceOf(OllamaError);
+    ).rejects.toBeInstanceOf(ModelError);
   });
 });

@@ -14,6 +14,8 @@ import {
   testHistory,
   testIdentity,
   testMessage,
+  entryReplies,
+  promptFor,
 } from "./helpers/fixtures.ts";
 
 /**
@@ -22,12 +24,6 @@ import {
  * question which arrived mid-session and was never answered.
  */
 
-const REACTION = (respond: boolean) =>
-  JSON.stringify({
-    reason: respond ? "asked me" : "not for me",
-    verdict: respond ? "reply" : "for_someone_else",
-    interest: respond ? 0.9 : 0,
-  });
 
 /**
  * The supervisor's `update` runs *concurrently* with the step it watches, so
@@ -96,10 +92,11 @@ describe("debrief", () => {
   it("does not run when nothing interrupted the session", async () => {
     // Most sessions. A debrief here would be a digest call spent confirming
     // that nothing happened.
-    const { result } = await run([reply(REACTION(true)), reply(RACE), reply(REVIEW)]);
+    const { result } = await run([...entryReplies(true).map(reply), reply(RACE), reply(REVIEW)]);
 
     expect(result.completed.map((s) => s.name)).toEqual([
-      "react",
+      "read",
+      "stance",
       "respond",
       "summarize",
       "review",
@@ -110,7 +107,7 @@ describe("debrief", () => {
   it("runs after the closing steps when something arrived", async () => {
     const { result } = await run(
       [
-        reply(REACTION(true)),
+        ...entryReplies(true).map(reply),
         reply(RACE),
         reply(RACE),
         reply(REVIEW),
@@ -120,7 +117,8 @@ describe("debrief", () => {
     );
 
     expect(result.completed.map((s) => s.name)).toEqual([
-      "react",
+      "read",
+      "stance",
       "respond",
       "summarize",
       "review",
@@ -135,7 +133,7 @@ describe("debrief", () => {
     // Reporting a still-queued message as unanswered raised a stale alarm live.
     const { server } = await run(
       [
-        reply(REACTION(true)),
+        ...entryReplies(true).map(reply),
         reply(RACE),
         reply(RACE),
         reply(REVIEW),
@@ -144,7 +142,7 @@ describe("debrief", () => {
       { pending: arrivesLater("separately — is staging up?") },
     );
 
-    const debriefPrompt = server.requests[4]?.body.messages?.[0]?.content ?? "";
+    const debriefPrompt = promptFor(server, "debrief");
     expect(debriefPrompt).toContain("separately — is staging up?");
     expect(debriefPrompt).toContain("gets a session of its own");
   });
@@ -152,7 +150,7 @@ describe("debrief", () => {
   it("is disabled by an empty step name", async () => {
     const { result } = await run(
       [
-        reply(REACTION(true)),
+        ...entryReplies(true).map(reply),
         reply(RACE),
         reply(RACE),
         reply(REVIEW),
@@ -169,7 +167,7 @@ describe("debrief", () => {
   it("reaches the next session, where nothing else remembers the question", async () => {
     const { result, paths } = await run(
       [
-        reply(REACTION(true)),
+        ...entryReplies(true).map(reply),
         reply(RACE),
         reply(RACE),
         reply(REVIEW),

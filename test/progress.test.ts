@@ -10,6 +10,7 @@ import {
   testHistory,
   testIdentity,
   testMessage,
+  entryReplies,
 } from "./helpers/fixtures.ts";
 import type { Config } from "../src/config/schema.ts";
 import type { ToolCallRecord } from "../src/tools/types.ts";
@@ -90,7 +91,7 @@ describe("a session narrating itself", () => {
   it("announces each step, and what the step touched", async () => {
     const { dir, cleanup } = await tempWorkingDir();
     const server: MockOllama = await mockOllama([
-      reply(JSON.stringify({ reason: "asked me", verdict: "reply", interest: 0.9 })),
+      ...entryReplies(true).map(reply),
       // `respond` ships with knowledge tools, so it runs a tool loop first: ask
       // for a tool, then answer without one to end the loop, then the final
       // schema-shaped call over the transcript.
@@ -129,10 +130,10 @@ describe("a session narrating itself", () => {
     // than on the whole string — the topic is chosen by a model and is not the
     // thing under test here.
     const at = (verb: string) => notes.findIndex((n) => n.startsWith(verb));
-    expect(at("reacting")).toBeGreaterThanOrEqual(0);
+    expect(at("reading the room")).toBeGreaterThanOrEqual(0);
     expect(at("responding")).toBeGreaterThanOrEqual(0);
     expect(at("reviewing")).toBeGreaterThanOrEqual(0);
-    expect(at("reacting")).toBeLessThan(at("responding"));
+    expect(at("reading the room")).toBeLessThan(at("responding"));
 
     // And the step that used a tool says so, after it.
     expect(notes).toContain("1 memory read");

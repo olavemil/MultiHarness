@@ -15,6 +15,7 @@ import {
   testHistory,
   testIdentity,
   testMessage,
+  entryReplies,
 } from "./helpers/fixtures.ts";
 
 /**
@@ -82,7 +83,7 @@ describe("salvaging a timed-out step", () => {
     return callModel({
       label: "test",
       host: server.host,
-      role: { name: "fast", model: "m", options: {}, noTools: false, exclusive: false },
+      role: { name: "fast", model: "m", backend: "ollama", options: {}, noTools: false, exclusive: false },
       prompt: "p",
       schema,
       fallback: () => ({ reason: "fallback", respond: false }),
@@ -125,7 +126,14 @@ describe("salvaging a timed-out step", () => {
       callModel({
         label: "test",
         host: server.host,
-        role: { name: "fast", model: "qwen3.6:27b", options: {}, noTools: false, exclusive: false },
+        role: {
+          name: "fast",
+          model: "qwen3.6:27b",
+          backend: "ollama",
+          options: {},
+          noTools: false,
+          exclusive: false,
+        },
         prompt: "p",
         schema,
         fallback: () => ({ reason: "fallback", respond: false }),
@@ -143,7 +151,7 @@ describe("a failed step records why, in the session", () => {
     // session can carry on from what it did gather.
     const { dir, cleanup } = await tempWorkingDir();
     const server = await mockOllama([
-      reply(JSON.stringify({ reason: "asked me", verdict: "reply", interest: 0.9 })),
+      ...entryReplies(true).map(reply),
       // `respond` never finishes: content streams, then the connection hangs
       // until the deadline fires. Nothing to salvage into the schema.
       { kind: "content", content: "half an ans", hang: true },
@@ -154,7 +162,11 @@ describe("a failed step records why, in the session", () => {
     const base = await testConfig(server.host, dir);
     const config = {
       ...base,
-      ollama: { ...base.ollama, request_timeout_ms: 700 },
+      // `respond` is a necessary step now — see session/budget.ts — so it runs
+      // at its own configured timeout regardless of `ollama.request_timeout_ms`
+      // or the session's remaining wallclock. Controlling it for this test
+      // means overriding it directly, the same way a real deployment would.
+      steps: { ...base.steps, respond: { ...base.steps["respond"], timeout_ms: 700 } },
     } as Config;
     const paths = resolvePaths(config.working_dir);
     await ensurePaths(paths);
@@ -178,9 +190,7 @@ describe("a failed step records why, in the session", () => {
     const { readFile } = await import("node:fs/promises");
     const failure = await readFile(path.join(result.session.dir, "failure.md"), "utf8");
     expect(failure).toContain("respond");
-    // Slower than the other cases here on purpose: `MIN_STEP_MS` floors a step's
-    // timeout at five seconds, so a genuine timeout cannot be faked faster.
-  }, 20_000);
+  });
 
   it("seals failure.md naming the step and the cause", async () => {
     const { dir, cleanup } = await tempWorkingDir();
@@ -218,10 +228,10 @@ describe("a failed step records why, in the session", () => {
 
     const failure = await readFile(path.join(sessionDir, "failure.md"), "utf8");
     expect(failure).toContain("# Session failed");
-    expect(failure).toContain("react");
+    expect(failure).toContain("read");
     expect(failure).toContain("model server exploded");
     // And it points at what the step had managed to write.
-    expect(failure).toContain("react.partial");
+    expect(failure).toContain("read.partial");
   });
 });
 
@@ -239,6 +249,7 @@ describe("absorbed arrivals do not start their own session", () => {
       needs_fact: false,
       needs_thought: false,
       steps: [],
+      reaction: "eyes",
     });
     // An `adjust` verdict queues the `adjust` step and then the reply again, so
     // the exact call count is not the point here — supply enough of the

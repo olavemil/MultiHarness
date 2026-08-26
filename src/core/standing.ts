@@ -1,8 +1,7 @@
 import type { Config } from "../config/schema.ts";
 import type { ChannelMessage } from "./types.ts";
 import { cosine } from "../knowledge/similarity.ts";
-import { embed } from "../model/ollama.ts";
-import { resolveRole } from "../model/roles.ts";
+import { defaultTimeoutFor, embedFor, hostFor, resolveRole } from "../model/roles.ts";
 
 /**
  * Whether an arriving message continues something the agent itself has been
@@ -95,8 +94,8 @@ async function embedAll(
 ): Promise<number[][]> {
   signal?.throwIfAborted();
   const role = resolveRole(config, "embed");
-  const result = await embed(config.ollama.host, role.model, inputs, {
-    timeoutMs: config.ollama.request_timeout_ms,
+  const result = await embedFor(role)(hostFor(config, role), role.model, inputs, {
+    timeoutMs: defaultTimeoutFor(config, role.backend),
     ...(role.keepAlive !== undefined ? { keepAlive: role.keepAlive } : {}),
     options: role.options,
     ...(signal ? { signal } : {}),

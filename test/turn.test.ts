@@ -10,6 +10,7 @@ import {
   testHistory,
   testIdentity,
   testMessage,
+  entryReplies,
 } from "./helpers/fixtures.ts";
 
 /**
@@ -218,7 +219,7 @@ describe("what holding a turn must not break", () => {
     });
     const server = await mockOllama(
       [
-        reply(JSON.stringify({ reason: "asked me", verdict: "reply", interest: 0.9 })),
+        ...entryReplies(true).map(reply),
         reply(RACE),
         reply(RACE),
         reply(JSON.stringify({ assessment: "Fine.", quality: 4, recommendations: [] })),
@@ -261,7 +262,7 @@ describe("what holding a turn must not break", () => {
     // deadlock at size 1 rather than fail — so it is worth pinning explicitly.
     const { dir, cleanup } = await tempWorkingDir();
     const server = await mockOllama([
-      reply(JSON.stringify({ reason: "not mine", own_subject: false, verdict: "for_someone_else", interest: 0 })),
+      ...entryReplies(false).map(reply),
       reply(JSON.stringify({ assessment: "ok", quality: 3, recommendations: [] })),
     ]);
 

@@ -3,6 +3,14 @@ import type { InboundMessage, InboundReaction } from "../core/types.ts";
 export type InboundHandler = (message: InboundMessage) => void;
 export type ReactionHandler = (reaction: InboundReaction) => void;
 
+export type ReactionResolution =
+  | { kind: "exact"; emoji: string }
+  | { kind: "fuzzy"; emoji: string; score: number }
+  | { kind: "ambiguous"; candidates: readonly string[] }
+  | { kind: "invalid"; emoji: string }
+  | { kind: "none"; emoji: string }
+  | { kind: "unverified"; emoji: string };
+
 /**
  * What an adapter delivers. A record rather than a positional argument so a
  * transport that has no notion of reactions simply never calls that one, and
@@ -30,6 +38,21 @@ export interface Adapter {
    * reactions simply does not offer it, and the harness falls back to silence.
    */
   react?(channelId: string, messageId: string, emoji: string): Promise<void>;
+  /**
+   * Validates and, when possible, resolves a reaction name to one this
+   * transport recognises.
+   *
+   * Optional because only transports with reaction vocabularies need it.
+   */
+  resolveReaction?(emoji: string): Promise<ReactionResolution>;
+  /**
+   * Write to one person directly rather than into a channel.
+   *
+   * Optional: a transport with no notion of a private message simply does not
+   * offer it, and the harness skips those targets rather than posting somewhere
+   * public — which would be the worst possible way to fail at a DM.
+   */
+  dm?(identityId: string, text: string): Promise<void>;
   /** Optional progress line. Never load-bearing — adapters may ignore it. */
   status?(channelId: string, headline: string): void;
   /**

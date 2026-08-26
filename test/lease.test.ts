@@ -136,6 +136,7 @@ describe("callModel and the lease", () => {
   const role = (over: Record<string, unknown> = {}) => ({
     name: "reasoning",
     model: "big",
+    backend: "ollama" as const,
     options: {},
     noTools: false,
     exclusive: true,
@@ -191,6 +192,7 @@ describe("the tool loop takes the lease too", () => {
   const role = (exclusive: boolean) => ({
     name: "reasoning",
     model: "big",
+    backend: "ollama" as const,
     options: {},
     noTools: false,
     exclusive,

@@ -13,6 +13,8 @@ import {
   testHistory,
   testIdentity,
   testMessage,
+  entryReplies,
+  promptFor,
 } from "./helpers/fixtures.ts";
 
 /**
@@ -20,14 +22,8 @@ import {
  * days rather than answering each message in isolation.
  */
 
-const REACTION = (respond: boolean) =>
-  JSON.stringify({
-    reason: respond ? "asked me" : "not for me",
-    verdict: respond ? "reply" : "for_someone_else",
-    interest: respond ? 0.9 : 0,
-  });
 const SCHEDULE = (steps: { step: string; topic: string }[]) =>
-  JSON.stringify({ reason: "plan this", needs_fact: false, needs_thought: true, steps });
+  JSON.stringify({ reason: "plan this", needs_fact: false, needs_thought: true, steps, reaction: "eyes" });
 const RESPONSE = JSON.stringify({ message: "Right — here is the plan." });
 const REVIEW = JSON.stringify({ assessment: "Fine.", quality: 4, recommendations: [] });
 
@@ -51,7 +47,10 @@ afterEach(async () => {
 async function run(replies: MockReply[], tweak: (c: Config) => Config = (c) => c) {
   const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
   const { dir, cleanup } = await tempWorkingDir();
-  const server: MockOllama = await mockOllama(replies);
+  // The suite's message names the agent, and both entry steps run on that
+  // path now: being named settles that the message is not *ignored*, not that
+  // it is answered without reading it.
+  const server: MockOllama = await mockOllama([...entryReplies(true).map(reply), ...replies]);
   cleanups.push(cleanup, server.close);
 
   const base = await testConfig(server.host, dir);
@@ -160,7 +159,6 @@ describe("planStore", () => {
 describe("the plan step", () => {
   it("writes a revision the harness applies, and seals its own output", async () => {
     const { result, paths } = await run([
-      reply(REACTION(true)),
       reply(SCHEDULE([{ step: "plan", topic: "set out the importer work" }])),
       reply(PLAN()),
       reply(RESPONSE),
@@ -182,15 +180,16 @@ describe("the plan step", () => {
     // `respond` should answer knowing what was just committed to, not what the
     // plan said before this session touched it.
     const { server } = await run([
-      reply(REACTION(true)),
       reply(SCHEDULE([{ step: "plan", topic: "set out the work" }])),
       reply(PLAN()),
       reply(RESPONSE),
       reply(REVIEW),
     ]);
 
-    const planPrompt = server.requests[2]?.body.messages?.[0]?.content ?? "";
-    expect(planPrompt).toContain("no plan is running");
+    // No plan is running when `plan` is asked to write one, so the block is
+    // absent rather than announcing its own emptiness.
+    const planPrompt = promptFor(server, "plan");
+    expect(planPrompt).not.toContain("The plan you are working to");
   });
 
   it("leaves the existing plan untouched when the revision cannot be parsed", async () => {
@@ -198,7 +197,7 @@ describe("the plan step", () => {
     // invent a goal, so nothing is written at all.
     const { dir, cleanup } = await tempWorkingDir();
     const server = await mockOllama([
-      reply(REACTION(true)),
+      ...entryReplies(true).map(reply),
       reply(SCHEDULE([{ step: "plan", topic: "revise" }])),
       reply("not json"),
       reply("still not json"),
@@ -243,7 +242,6 @@ describe("the plan step", () => {
 
   it("closes a plan, and the next session sees none", async () => {
     const { result, paths, config } = await run([
-      reply(REACTION(true)),
       reply(SCHEDULE([{ step: "plan", topic: "close it" }])),
       reply(PLAN({ status: "fulfilled", outstanding: [], changed: "the importer shipped" })),
       reply(RESPONSE),
@@ -259,7 +257,7 @@ describe("the plan step", () => {
 
   it("reaches later sessions through current_plan", async () => {
     const { dir, cleanup } = await tempWorkingDir();
-    const server = await mockOllama([reply(REACTION(true)), reply(RESPONSE), reply(REVIEW)]);
+    const server = await mockOllama([...entryReplies(true).map(reply), reply(RESPONSE), reply(REVIEW)]);
     cleanups.push(cleanup, server.close);
 
     const config = await testConfig(server.host, dir);
@@ -286,7 +284,7 @@ describe("the plan step", () => {
     });
 
     // `respond` declares `current_plan`; a running plan should be in its prompt.
-    const respondPrompt = server.requests[1]?.body.messages?.[0]?.content ?? "";
+    const respondPrompt = promptFor(server, "respond");
     expect(respondPrompt).toContain("Build the CSV importer");
     expect(respondPrompt).toContain("Design the schema mapping");
   });

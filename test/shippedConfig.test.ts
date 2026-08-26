@@ -26,8 +26,21 @@ describe("the shipped configuration", () => {
   it("parses every [session] key as written, not as a schema default", async () => {
     const { session } = await hermetic();
 
-    expect(session.reply_target).toBe(true);
     expect(session.restate_step).toBe("restate");
+    // Suggestions, not a constraint — but every one still has to say when it
+    // fits, or it reaches the prompt as an emoji name with no situation
+    // attached, which is worse than not offering it.
+    expect(Object.keys(session.acknowledgements).length).toBeGreaterThan(1);
+    for (const when of Object.values(session.acknowledgements)) {
+      expect(when.trim()).not.toBe("");
+    }
+    // Both fallbacks have to be sane on their own: they are what a parse
+    // failure sends, with no model judgement behind them.
+    expect(session.acknowledge_emoji).not.toBe("");
+    expect(session.working_emoji).not.toBe("");
+    // `reflect` has to be allowed as maintenance work, or a reaction that
+    // arrives after the channel goes quiet is never read by anything.
+    expect(session.maintenance.steps).toContain(session.reflect_step);
     expect(session.debrief_step).toBe("debrief");
     expect(session.plan_step).toBe("plan");
     expect(session.acknowledge_emoji).toBe("+1");
@@ -54,7 +67,8 @@ describe("the shipped configuration", () => {
     const { session, steps } = await hermetic();
     const named = [
       session.reflect_step,
-      session.entry_step,
+      session.read_step,
+      session.stance_step,
       session.schedule_step,
       session.respond_step,
       session.restate_step,

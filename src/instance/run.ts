@@ -6,14 +6,25 @@ import type { Identity, InboundMessage } from "../core/types.ts";
 import { continuationTrigger, maintenanceTrigger, messageTrigger } from "../core/trigger.ts";
 import { detectMention } from "../core/mentions.ts";
 import { interjectDelay } from "../core/participation.ts";
-import { pendingMaintenance } from "../session/maintenance.ts";
+import { pendingMaintenance, type MaintenanceWork } from "../session/maintenance.ts";
+import { eligibleTargets, type InitiativeTarget } from "../core/initiative.ts";
+import { rememberChannel, surveyChannels } from "../store/channelRegistry.ts";
+import { lastPerTarget, loadInitiative, recordInitiative } from "../store/initiativeStore.ts";
+import { listIdentities } from "../store/identityStore.ts";
+import { openKnowledgeDb } from "../knowledge/db.ts";
+import { impressionCount } from "../knowledge/impressions.ts";
 import { shouldContinue, type ProgressDelta } from "../session/continuation.ts";
 import type { Plan } from "../store/planStore.ts";
 import { runSession } from "../session/run.ts";
 import { turnQueueDepth, withTurn } from "../session/turn.ts";
 import { appendMessage, readRecent } from "../store/channelStore.ts";
-import { appendReaction, readReactions } from "../store/reactionStore.ts";
-import { loadIdentity } from "../store/identityStore.ts";
+import {
+  appendReaction,
+  readNewReactions,
+  writeReactionWatermark,
+  type StoredReaction,
+} from "../store/reactionStore.ts";
+import { loadIdentity, saveIdentity } from "../store/identityStore.ts";
 import { ensurePaths, resolvePaths } from "../store/paths.ts";
 import type { InstanceRef } from "./discover.ts";
 import { readInstanceEnv, type Env } from "./env.ts";
@@ -135,6 +146,7 @@ export async function startInstance(
   }
 
   const channels = new Map<string, Channel>();
+  let maintenanceBatchRunning = false;
 
   const channelOf = (id: string): Channel => {
     let existing = channels.get(id);
@@ -144,6 +156,46 @@ export async function startInstance(
     }
     return existing;
   };
+
+  /**
+   * Rebuild in-memory channel state from persisted history.
+   *
+   * Maintenance should not depend on seeing a *new* message after startup: the
+   * channel registry and history already contain enough to know which channels
+   * exist, how long they have been quiet, and who was last speaking there.
+   */
+  async function hydrateChannelsFromStore(): Promise<void> {
+    const now = Date.now();
+    const known = await surveyChannels(paths, config.agent.name, HISTORY_LIMIT);
+
+    for (const entry of known) {
+      const channel = channelOf(entry.id);
+
+      // Infinity means "no known last activity"; treat it as very old rather
+      // than NaN/-Infinity so the idle gate can still reason about it.
+      channel.lastActivity = Number.isFinite(entry.silentMs)
+        ? Math.max(0, now - entry.silentMs)
+        : 0;
+
+      // `pendingMaintenance` needs an identity for impression synthesis.
+      // Recover it from the latest non-agent message in persisted history.
+      if (!channel.lastIdentity) {
+        const history = await readRecent(paths, entry.id, HISTORY_LIMIT);
+        const lastHuman = [...history].reverse().find((m) => !m.fromAgent);
+        if (lastHuman) {
+          channel.lastIdentity = await loadIdentity(
+            paths,
+            lastHuman.identityId,
+            lastHuman.author,
+          );
+        }
+      }
+    }
+
+    if (known.length > 0) {
+      log.log(`hydrated ${known.length} known channel(s) from stored history`);
+    }
+  }
 
   async function handle(message: InboundMessage): Promise<void> {
     const channelForTurn = channelOf(message.channelId);
@@ -182,10 +234,21 @@ export async function startInstance(
   ): Promise<void> {
     // History is read before the triggering message is appended, so a step's
     // `recent_messages` block never contains the message it is reacting to.
+    // Recorded on every message so a rename follows the workspace, and so an
+    // idle agent can survey rooms it has not heard from since the last restart.
+    await rememberChannel(paths, message.channelId, message.channelName, message.receivedAt);
+
     const stored = await readRecent(paths, message.channelId, HISTORY_LIMIT);
     const identity = await loadIdentity(paths, message.identityId, message.authorName);
+    // Recorded here so an idle agent can tell a colleague from somebody who
+    // stopped talking three months ago. Nothing on the reply path reads it.
+    await saveIdentity(paths, { ...identity, lastSeenAt: message.receivedAt });
     // Read alongside history, and only `reflect` declares the block.
-    const reactions = await readReactions(paths, message.channelId);
+    // Only what has not been reflected on yet. Every standing reaction used to
+    // be handed over at every session, so a 👍 from three exchanges ago arrived
+    // looking exactly as fresh as one from a minute ago — and this step's whole
+    // job is judging what the *latest* signal says.
+    const reactions = await readNewReactions(paths, message.channelId);
 
     // **Anything that arrived while this session queued is history, not queue.**
     //
@@ -230,7 +293,7 @@ export async function startInstance(
       await appendMessage(paths, message.channelId, {
         id: `${message.id}-reply`,
         identityId: "agent",
-        author: "agent",
+        author: config.agent.name,
         text,
         at: new Date().toISOString(),
         fromAgent: true,
@@ -249,6 +312,11 @@ export async function startInstance(
       reactions,
       onProgress,
       onReply,
+      loadInitiativeTargets: computeInitiativeTargets,
+      resolveReaction: async (emoji) => {
+        if (!adapter.resolveReaction) return { kind: "unverified", emoji };
+        return adapter.resolveReaction(emoji);
+      },
       onAcknowledge: async (messageId, emoji) => {
         if (!adapter.react) return;
         await adapter.react(message.channelId, messageId, emoji);
@@ -280,6 +348,11 @@ export async function startInstance(
     for (const { step, verdict } of result.supervisorVerdicts ?? []) {
       log.warn(`supervisor ${verdict} during ${step}`);
     }
+
+    // The ordinary path: `reflect` read these at the start of this session, so
+    // they are spent. Without this they stay "new" for ever and every later
+    // sweep sees work to do that has already been done.
+    await markReactionsSeen(message.channelId, result.completed, reactions);
     if (result.budgetStop) {
       log.warn(`session ${result.session.id} cut short: ${result.budgetStop}`);
     }
@@ -287,7 +360,7 @@ export async function startInstance(
     if (result.reply === undefined) {
       adapter.status?.(
         message.channelId,
-        `no reply (${result.reaction?.verdict}) — ${result.reaction?.reason ?? "reaction did not ask for one"}`,
+        `no reply (${result.decision?.verdict ?? "no decision"}) — ${result.decision?.reason ?? "nothing asked for one"}`,
       );
     }
 
@@ -346,7 +419,7 @@ export async function startInstance(
               await appendMessage(paths, channelId, {
                 id: `${channelId}-report-${iteration}-${Date.now()}`,
                 identityId: "agent",
-                author: "agent",
+                author: config.agent.name,
                 text,
                 at: new Date().toISOString(),
                 fromAgent: true,
@@ -374,32 +447,194 @@ export async function startInstance(
    * error message in the channel would be the agent breaking a silence to report
    * on work it started by itself.
    */
+  /**
+   * Sends something the agent decided to say into a channel nobody prompted.
+   *
+   * Delivered here rather than from the session because the channel is not the
+   * session's own — and because the cooldown that stops this becoming a nuisance
+   * is instance-wide, so it belongs where every channel can see it.
+   *
+   * The message is appended to that channel's history like any other thing the
+   * agent said, which matters: the next session there reads it as the agent's
+   * last contribution, so `reflect` can judge how it landed.
+   */
+  async function deliverInitiatives(
+    initiatives: NonNullable<Awaited<ReturnType<typeof runSession>>["initiatives"]>  | undefined,
+  ): Promise<void> {
+    for (const it of initiatives ?? []) {
+      try {
+        if (it.kind === "dm") {
+          if (!adapter.dm) {
+            // Skipped rather than posted anywhere else. Falling back to a
+            // channel would turn a private message into a public one, which is
+            // the worst available way to fail at this.
+            log.warn(`cannot message ${it.name} directly on ${adapter.id}; skipped`);
+            continue;
+          }
+          await adapter.dm(it.id, it.message);
+        } else {
+          await adapter.send(it.id, it.message);
+          // Appended to that channel's history like anything else the agent
+          // said, so the next session there reads it as the last contribution
+          // and `reflect` can judge how it landed.
+          await appendMessage(paths, it.id, {
+            id: `${it.id}-initiative-${Date.now()}`,
+            identityId: "agent",
+            author: config.agent.name,
+            text: it.message,
+            at: new Date().toISOString(),
+            fromAgent: true,
+          });
+          channelOf(it.id).lastActivity = Date.now();
+        }
+
+        // Stamped only after it actually went out — before delivery it would
+        // silence the agent for days on the strength of a send that failed.
+        await recordInitiative(paths, it.ref);
+        log.log(`wrote to ${it.name} unprompted: ${it.message.slice(0, 60)}`);
+      } catch (cause) {
+        log.error(`could not write to ${it.name}: ${String(cause)}`);
+      }
+    }
+  }
+
+  /**
+   * Cross-channel candidate targets for `initiate`, behind countable gates.
+   *
+   * Shared by maintenance and message sessions so both use exactly the same
+   * eligibility/cooldown logic.
+   */
+  async function computeInitiativeTargets(): Promise<InitiativeTarget[]> {
+    const record = await loadInitiative(paths);
+    const identities = await listIdentities(paths);
+
+    // Only people the agent has actually formed a view of. An impression means
+    // several exchanges' worth of noticing, which is the difference between
+    // writing to somebody you know and writing to a name in a log.
+    const db = openKnowledgeDb(paths.knowledge);
+    let counts: Map<string, number>;
+    try {
+      counts = new Map(identities.map((p) => [p.id, impressionCount(db, p.id)]));
+    } finally {
+      db.close();
+    }
+
+    const gate = eligibleTargets({
+      config,
+      channels: await surveyChannels(paths, config.agent.name),
+      identities,
+      impressionCounts: counts,
+      lastInitiatedAt: record.at,
+      lastPerTarget: lastPerTarget(record),
+    });
+
+    if (gate.blocked) log.log(`not starting anything: ${gate.blocked}`);
+    return gate.eligible;
+  }
+
   async function maintain(
     channelId: string,
     identity: Identity,
-    work: { steps: string[]; reason: string },
+    work: MaintenanceWork,
+    maintenanceBatch?: readonly { channelId: string; steps: readonly string[]; reason: string }[],
   ): Promise<void> {
+    let seen: readonly StoredReaction[] = [];
+
+    // **The survey spans channels, so the daemon builds it, not the session.**
+    // Only channels that already passed the countable gates are offered, so the
+    // step is asked "is any of this worth saying?" and never "is it a reasonable
+    // hour?" — the bounds are not something a model gets to reason about.
+    let targets: InitiativeTarget[] = [];
+    if (work.steps.includes("initiate")) {
+      targets = await computeInitiativeTargets();
+      if (targets.length === 0) {
+        work = { ...work, steps: work.steps.filter((name) => name !== "initiate") };
+        if (work.steps.length === 0) return;
+      }
+    }
+
     // Nobody is waiting on it, but it must not run beside a real session — the
     // whole point is that only one thing touches the weights at a time.
     const result = await withTurn(
       async (queuedMs) => {
         const history = await readRecent(paths, channelId, HISTORY_LIMIT);
+        // The reason this session may be running at all: a reaction arrived and
+        // nobody spoke afterwards, so nothing else would ever read it.
+        seen = await readNewReactions(paths, channelId);
         return runSession({
           config,
           paths,
-          trigger: maintenanceTrigger(channelId, work.reason, work.steps),
+          trigger: maintenanceTrigger(channelId, work.reason, work.steps, work.curiosity),
           identity,
           history,
+          reactions: seen,
+          maintenanceBatch,
           queuedMs,
+          initiativeTargets: targets,
           onProgress: (note) => adapter.status?.(channelId, note),
         });
       },
       { size: config.session.turn.size },
     );
+    await markReactionsSeen(channelId, result.completed, seen);
+    await deliverInitiatives(result.initiatives);
     log.log(
       `maintenance session ${result.session.id} in ${channelId} ` +
         `(${work.steps.join(", ")}): ${work.reason}`,
     );
+  }
+
+  /**
+   * Runs one channel's maintenance work under that channel's drain marker.
+   *
+   * The marker keeps per-channel serialisation intact: a real session for this
+   * channel will wait until maintenance is done, rather than running beside it.
+   */
+  function drainMaintenance(
+    channelId: string,
+    identity: Identity,
+    work: MaintenanceWork,
+    maintenanceBatch?: readonly { channelId: string; steps: readonly string[]; reason: string }[],
+  ): Promise<void> {
+    const channel = channelOf(channelId);
+    const running = (async () => {
+      try {
+        await maintain(channelId, identity, work, maintenanceBatch);
+      } finally {
+        channel.draining = undefined;
+        channel.lastActivity = Date.now();
+      }
+    })();
+
+    channel.draining = running;
+    return running;
+  }
+
+  /**
+   * Moves the watermark to the newest reaction the session was actually given.
+   *
+   * Two ways to get this wrong and both lose a signal silently:
+   *
+   * - **Moving it when `reflect` did not run.** Nothing looked, so nothing was
+   *   seen; advancing anyway discards the reaction unread, which is the failure
+   *   the watermark exists to prevent with the sign flipped.
+   * - **Stamping the wall clock instead.** A reaction arriving *while* the
+   *   session ran is older than "now" and would be filtered out for ever after,
+   *   having never been in front of anything. Stamping what was handed over
+   *   leaves it strictly newer, so the next sweep still finds it.
+   */
+  async function markReactionsSeen(
+    channelId: string,
+    completed: readonly { name: string }[],
+    seen: readonly { at: string }[],
+  ): Promise<void> {
+    if (seen.length === 0) return;
+    if (!completed.some((step) => step.name === config.session.reflect_step)) return;
+
+    const newest = seen.reduce((latest, r) => (r.at > latest ? r.at : latest), seen[0]!.at);
+    await writeReactionWatermark(paths, channelId, newest).catch((cause) => {
+      log.error(`could not record which reactions were seen in ${channelId}: ${String(cause)}`);
+    });
   }
 
   /** Serial within a channel; concurrent calls join that channel's drain. */
@@ -438,8 +673,8 @@ export async function startInstance(
   }
 
   /**
-   * Idle sweep. Runs maintenance in channels that have gone quiet and have work
-   * waiting, one channel at a time and never alongside a live session.
+    * Idle sweep. Runs one global maintenance batch once every tracked channel is
+    * quiet, and each channel's maintenance work runs under that channel's drain.
    *
    * Joining the channel's own drain is what keeps that true: per-channel history
    * and the identity record assume a single writer, and an idle run writing the
@@ -449,33 +684,67 @@ export async function startInstance(
   function sweep(): void {
     const { enabled, idle_ms } = config.session.maintenance;
     if (!enabled) return;
+    if (maintenanceBatchRunning) return;
 
-    for (const [channelId, channel] of channels) {
-      if (channel.draining || channel.inbox.length > 0) continue;
-      if (Date.now() - channel.lastActivity < idle_ms) continue;
+    const now = Date.now();
+    // Global idle gate: maintenance runs only once the whole instance is quiet.
+    // A single active channel keeps all channels on the reply path.
+    const allIdle = [...channels.values()].every(
+      (channel) =>
+        !channel.draining &&
+        channel.inbox.length === 0 &&
+        now - channel.lastActivity >= idle_ms,
+    );
+    if (!allIdle) return;
 
-      const identity = channel.lastIdentity;
-      if (!identity) continue;
+    maintenanceBatchRunning = true;
+    void (async () => {
+      const batch: { channelId: string; identity: Identity; work: MaintenanceWork }[] = [];
+      for (const [channelId, channel] of channels) {
+        if (channel.draining || channel.inbox.length > 0) continue;
+        if (now - channel.lastActivity < idle_ms) continue;
+        const identity = channel.lastIdentity;
+        if (!identity) continue;
 
-      channel.draining = (async () => {
         try {
-          const work = await pendingMaintenance(paths, config, identity);
+          const work = await pendingMaintenance(paths, config, identity, channelId);
           // Most sweeps find nothing, which is the intended behaviour: the
           // session is the expensive part and it only runs when there is work.
-          if (work) await maintain(channelId, identity, work);
+          if (work) batch.push({ channelId, identity, work });
+        } catch (cause) {
+          const detail = cause instanceof Error ? cause.message : String(cause);
+          log.error(`maintenance planning failed in ${channelId}: ${detail}`);
+        }
+      }
+
+      if (batch.length === 0) return;
+
+      const maintenanceBatch = batch.map(({ channelId, work }) => ({
+        channelId,
+        steps: [...work.steps],
+        reason: work.reason,
+      }));
+
+      for (const { channelId, identity, work } of batch) {
+        try {
+          await drainMaintenance(channelId, identity, work, maintenanceBatch);
         } catch (cause) {
           const detail = cause instanceof Error ? cause.message : String(cause);
           log.error(`maintenance failed in ${channelId}: ${detail}`);
-        } finally {
-          channel.draining = undefined;
-          channel.lastActivity = Date.now();
         }
-      })();
-    }
+      }
+    })().finally(() => {
+      maintenanceBatchRunning = false;
+    });
   }
 
   log.log(`working directory: ${paths.root}`);
   log.log(`ollama: ${config.ollama.host}`);
+  if (config.omlx) log.log(`omlx: ${config.omlx.host}`);
+
+  // Before idle scheduling starts. Without this, maintenance only sees channels
+  // that have received messages since this daemon started.
+  await hydrateChannelsFromStore();
 
   // Checked far more often than `idle_ms`, because the sweep itself is a few
   // comparisons — the cost is in the session it may start, and that is gated on
@@ -486,7 +755,7 @@ export async function startInstance(
   if (sweepTimer) {
     log.log(
       `maintenance sessions on: after ${config.session.maintenance.idle_ms}ms idle ` +
-        `per channel, running ${config.session.maintenance.steps.join(", ")}`,
+        `across all channels, running ${config.session.maintenance.steps.join(", ")}`,
     );
   }
 

@@ -2,6 +2,8 @@ import pkg from "@slack/bolt";
 import type { Adapter } from "../types.ts";
 import type { InboundMessage } from "../../core/types.ts";
 import { createLogger, type Logger } from "../../instance/log.ts";
+import { normaliseEmoji } from "../../core/emoji.ts";
+import { resolveReactionName } from "./reactionResolver.ts";
 import {
   channelIdFor,
   decodeText,
@@ -61,12 +63,40 @@ export function createSlackAdapter(opts: SlackAdapterOptions): Adapter {
   const names = new Map<string, string>();
   /** Channel id used by the harness -> the thread to reply into. */
   const replyThreads = new Map<string, string>();
+  /** Slack channel id -> what the people in it call it. */
+  const channelNames = new Map<string, string>();
+
+  /** Cached known reaction names from Slack. */
+  let reactionsCache: { names: string[]; fetchedAt: number } | undefined;
 
   let botUserId = "";
   let markClosed: () => void;
   const closed = new Promise<void>((resolve) => {
     markClosed = resolve;
   });
+
+  /**
+   * `#deploys` rather than `C07ABCXYZ`, cached like a user name.
+   *
+   * Only the step deciding *where* to speak unprompted needs this; nothing on
+   * the reply path does, since a reply goes back where it came from. Needs
+   * `channels:read` (and `groups:read` for private channels) — a failure falls
+   * back to the id, which is legible if ugly and never fatal.
+   */
+  async function channelDisplayName(channelId: string): Promise<string | undefined> {
+    const cached = channelNames.get(channelId);
+    if (cached) return cached;
+    try {
+      const info = await app.client.conversations.info({ channel: channelId });
+      const name = info.channel?.name;
+      if (!name) return undefined;
+      const pretty = `#${name}`;
+      channelNames.set(channelId, pretty);
+      return pretty;
+    } catch {
+      return undefined;
+    }
+  }
 
   async function displayName(userId: string): Promise<string> {
     const cached = names.get(userId);
@@ -84,6 +114,82 @@ export function createSlackAdapter(opts: SlackAdapterOptions): Adapter {
     } catch {
       // A lookup failure must not drop the message; the id is still an identity.
       return userId;
+    }
+  }
+
+  /** Pulls reaction names out of a Slack payload without depending on one shape. */
+  function collectReactionNames(value: unknown, out: Set<string>, depth = 0): void {
+    if (depth > 8 || value === null || value === undefined) return;
+    if (Array.isArray(value)) {
+      for (const item of value) collectReactionNames(item, out, depth + 1);
+      return;
+    }
+    if (typeof value !== "object") return;
+
+    const record = value as Record<string, unknown>;
+    const reactions = record["reactions"];
+    if (Array.isArray(reactions)) {
+      for (const entry of reactions) {
+        if (!entry || typeof entry !== "object") continue;
+        const name = (entry as Record<string, unknown>)["name"];
+        if (typeof name === "string") out.add(name);
+      }
+    }
+
+    for (const nested of Object.values(record)) {
+      collectReactionNames(nested, out, depth + 1);
+    }
+  }
+
+  async function listKnownReactions(): Promise<string[]> {
+    const now = Date.now();
+    // Fresh enough: avoid one API sweep per acknowledgement.
+    if (reactionsCache && now - reactionsCache.fetchedAt < 5 * 60_000) {
+      return reactionsCache.names;
+    }
+
+    const names = new Set<string>();
+    let cursor: string | undefined;
+
+    for (let page = 0; page < 25; page++) {
+      const response = await app.client.reactions.list({
+        limit: 200,
+        ...(cursor ? { cursor } : {}),
+      });
+      collectReactionNames((response as { items?: unknown[] }).items, names);
+
+      const next =
+        (response as { response_metadata?: { next_cursor?: string } }).response_metadata
+          ?.next_cursor;
+      const trimmed = next?.trim();
+      if (!trimmed) break;
+      cursor = trimmed;
+    }
+
+    // Complements `reactions.list`: all defined emoji names, including custom.
+    try {
+      const emoji = await app.client.emoji.list({});
+      const declared = (emoji as { emoji?: Record<string, string> }).emoji;
+      for (const name of Object.keys(declared ?? {})) names.add(name);
+    } catch {
+      // Optional scope; absence degrades to what `reactions.list` saw.
+    }
+
+    const known = [...names];
+    reactionsCache = { names: known, fetchedAt: now };
+    return known;
+  }
+
+  async function resolveReaction(emoji: string) {
+    const normalised = normaliseEmoji(emoji);
+    if (!normalised) return { kind: "invalid", emoji } as const;
+
+    try {
+      const known = await listKnownReactions();
+      return resolveReactionName(normalised, known);
+    } catch (cause) {
+      log.warn(`could not list reactions for validation: ${String(cause)}`);
+      return { kind: "unverified", emoji: normalised } as const;
     }
   }
 
@@ -133,6 +239,7 @@ export function createSlackAdapter(opts: SlackAdapterOptions): Adapter {
         await Promise.all(mentioned.map((id) => displayName(id)));
 
         const channelId = channelIdFor(message, threadMode);
+        const channelName = await channelDisplayName(message.channel as string);
         const thread = threadTsFor(message);
         if (thread) replyThreads.set(channelId, thread);
 
@@ -145,6 +252,7 @@ export function createSlackAdapter(opts: SlackAdapterOptions): Adapter {
           authorName: author,
           text: decodeText(message.text as string, (id) => names.get(id)),
           receivedAt: new Date().toISOString(),
+          ...(channelName ? { channelName } : {}),
         } satisfies InboundMessage);
       });
 
@@ -199,13 +307,40 @@ export function createSlackAdapter(opts: SlackAdapterOptions): Adapter {
     // reaction is a courtesy, and a session must not die because one could not
     // be added — `already_reacted` alone would otherwise be fatal.
     async react(channelId, messageId, emoji) {
+      const resolved = await resolveReaction(emoji);
+      const chosen =
+        resolved.kind === "exact" || resolved.kind === "fuzzy"
+          ? resolved.emoji
+          : resolved.kind === "ambiguous"
+            ? resolved.candidates[0] ?? emoji
+            : resolved.emoji;
       const ts = messageId.slice(messageId.indexOf("-") + 1);
       const target = messageId.slice(0, messageId.indexOf("-"));
       try {
-        await app.client.reactions.add({ channel: target || channelId, timestamp: ts, name: emoji });
+        await app.client.reactions.add({ channel: target || channelId, timestamp: ts, name: chosen });
       } catch (cause) {
-        log.warn(`could not add :${emoji}: — ${String(cause)}`);
+        log.warn(`could not add :${chosen}: — ${String(cause)}`);
       }
+    },
+
+    async resolveReaction(emoji) {
+      return resolveReaction(emoji);
+    },
+
+    /**
+     * Opens a DM with one user and writes to it.
+     *
+     * `conversations.open` is idempotent and returns the same private channel
+     * every time, so nothing has to be cached. Needs `im:write`; without it the
+     * call throws and the caller logs it rather than falling back to anywhere
+     * public, which would be the worst possible way to fail at a private
+     * message.
+     */
+    async dm(identityId, text) {
+      const opened = await app.client.conversations.open({ users: identityId });
+      const channel = opened.channel?.id;
+      if (!channel) throw new Error(`could not open a DM with ${identityId}`);
+      await app.client.chat.postMessage({ channel, text });
     },
 
     async send(channelId, text) {

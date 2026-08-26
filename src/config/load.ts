@@ -92,6 +92,7 @@ export async function loadConfig(
   }
 
   warnOnPlaceholders(parsed.data, warn);
+  warnOnOmlxKeepAlive(parsed.data, warn);
   return parsed.data;
 }
 
@@ -105,6 +106,27 @@ function warnOnPlaceholders(config: Config, warn: (message: string) => void): vo
       `[config] roles still set to ${PLACEHOLDER_MODEL}: ${unset.join(", ")}. ` +
         `Set real ollama tags in config/default.toml or $MULTIHARNESS_CONFIG ` +
         `before running a step that uses them.`,
+    );
+  }
+}
+
+/**
+ * `keep_alive` has no wire equivalent on oMLX — it manages residency itself
+ * rather than per request — so a role that sets both is misconfigured in a way
+ * that would otherwise be invisible, the same shape as `embed`'s `keep_alive`
+ * silently doing nothing before that was traced down. Warned once at startup
+ * rather than left to be noticed from `ollama ps`-shaped confusion that does
+ * not even apply to this backend.
+ */
+function warnOnOmlxKeepAlive(config: Config, warn: (message: string) => void): void {
+  const affected = Object.entries(config.roles)
+    .filter(([, role]) => role.backend === "omlx" && role.keep_alive !== undefined)
+    .map(([name]) => name);
+
+  if (affected.length > 0) {
+    warn(
+      `[config] roles on backend "omlx" set keep_alive, which that backend has no way to honour: ` +
+        `${affected.join(", ")}. Configure residency in oMLX itself instead.`,
     );
   }
 }

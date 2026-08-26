@@ -26,7 +26,9 @@ export const impression: ModelStep<Impression> = {
   kind: "model",
   name: "impression",
   defaultRole: "digest",
-  contextBlocks: ["user_summary", "identity_impressions"],
+  voice: "observer",
+  contextBlocks: ["identity_impressions"],
+  appendix: ["maintenance_batch", "user_summary"],
   outputFile: "impression.md",
   buildSchema: () => schema,
 

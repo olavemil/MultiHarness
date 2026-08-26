@@ -24,7 +24,9 @@ export const review: ModelStep<Review> = {
   // requires seeing the reply, which is what `prior_step_output` carries.
   // The restatement joins them because comparing it against the literal message
   // is the only way interpretation drift becomes visible after the fact.
-  contextBlocks: ["incoming_message", "request", "prior_step_output", "session_summary"],
+  voice: "observer",
+  contextBlocks: ["session_summary"],
+  appendix: ["incoming_message", "request", "prior_step_output"],
   outputFile: "review.md",
   buildSchema: () => schema,
 

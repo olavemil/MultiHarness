@@ -12,6 +12,9 @@ import type { ContextBlock } from "./types.ts";
  */
 export const priorRequest: ContextBlock = {
   name: "prior_request",
-  resolve: ({ prior }) =>
-    prior?.request.trim() || "(the previous session recorded no reading of what was asked)",
+  heading: {
+    agent: "What the last exchange here was taken to mean",
+    observer: "How the previous session read what was being asked",
+  },
+  resolve: ({ prior }) => prior?.request.trim() || undefined,
 };

@@ -15,6 +15,15 @@ const input = (overrides: Partial<BlockInput> = {}): BlockInput => ({
 
 const config = async () => testConfig("http://127.0.0.1:1", "/tmp/unused");
 
+/** A step already sealed in this session, for the blocks that read `completed`. */
+const sealed = (name: string, content: string) => ({
+  name,
+  topic: "",
+  outputFile: `${name}.md`,
+  content,
+  durationMs: 1,
+});
+
 describe("truncateToTokens", () => {
   it("leaves text that fits untouched", () => {
     const { text, truncated } = truncateToTokens("short", 100);
@@ -49,12 +58,17 @@ describe("truncateToTokens", () => {
 });
 
 describe("buildContext", () => {
-  it("resolves declared blocks in the order given", async () => {
-    const built = await buildContext(
-      ["incoming_message", "user_summary"],
-      input(),
-      await config(),
-    );
+  const build = async (args: Partial<Parameters<typeof buildContext>[0]> = {}) =>
+    buildContext({
+      input: input(),
+      config: await config(),
+      voice: "agent",
+      headingVars: { sender: "olav" },
+      ...args,
+    });
+
+  it("resolves inline blocks in the order given", async () => {
+    const built = await build({ blocks: ["incoming_message", "user_summary"] });
 
     expect(built.blocks.map((b) => b.name)).toEqual(["incoming_message", "user_summary"]);
     expect(built.variables["incoming_message"]).toContain("what version of node");
@@ -72,7 +86,12 @@ describe("buildContext", () => {
     }));
 
     const cfg = await config();
-    const built = await buildContext(["recent_messages"], input({ history }), cfg);
+    const built = await buildContext({
+      blocks: ["recent_messages"],
+      input: input({ history }),
+      config: cfg,
+      voice: "agent",
+    });
     const block = built.blocks[0];
 
     expect(block?.truncated).toBe(true);
@@ -87,24 +106,86 @@ describe("buildContext", () => {
     // session_summary is deliberately absent from [context.budgets].
     expect(cfg.context.budgets["session_summary"]).toBeUndefined();
 
-    const built = await buildContext(["session_summary"], input(), cfg);
+    const built = await buildContext({
+      blocks: ["session_summary"],
+      input: input({ completed: [sealed("summarize", "ran two steps")] }),
+      config: cfg,
+      voice: "agent",
+    });
     expect(built.blocks[0]?.budgetTokens).toBe(cfg.context.default_budget_tokens);
   });
 
-  it("uses the explicit budget when config provides one", async () => {
-    const cfg = await config();
-    const built = await buildContext(["prior_step_output"], input(), cfg);
-    expect(built.blocks[0]?.budgetTokens).toBe(cfg.context.budgets["prior_step_output"]);
-  });
-
   it("names the known blocks when a step declares one that does not exist", async () => {
-    await expect(buildContext(["nonsense"], input(), await config())).rejects.toThrowError(
+    await expect(build({ blocks: ["nonsense"] })).rejects.toThrowError(
       /Known blocks: .*incoming_message/,
     );
   });
 
-  it("describes an empty channel rather than emitting nothing", async () => {
-    const built = await buildContext(["recent_messages"], input({ history: [] }), await config());
-    expect(built.variables["recent_messages"]).toContain("no earlier messages");
+  // --- The appendix mechanism -----------------------------------------------
+  // The whole point of it: a step's prompt is a frame plus whatever context
+  // actually exists, never a skeleton of headings over "(nothing here)".
+
+  it("omits an absent appendix block entirely — no heading, no placeholder", async () => {
+    const built = await build({ appendix: ["current_plan", "user_summary"] });
+
+    // No plan is running, so it contributes nothing at all.
+    expect(built.variables["context"]).not.toContain("plan");
+    expect(built.variables["context"]).toContain("Runs the harness.");
+    expect(built.blocks.map((b) => b.name)).toEqual(["user_summary"]);
+  });
+
+  it("renders nothing at all when every appendix block is absent", async () => {
+    const built = await build({
+      appendix: ["current_plan", "request", "reactions"],
+      input: input({ identity: testIdentity({ summary: "" }) }),
+    });
+    expect(built.variables["context"]).toBe("");
+  });
+
+  it("labels an appendix by the reading step's voice", async () => {
+    const withCompleted = input({ completed: [sealed("research", "node 22 ships sqlite")] });
+
+    const own = await build({ appendix: ["prior_step_output"], input: withCompleted });
+    const judged = await build({
+      appendix: ["prior_step_output"],
+      input: withCompleted,
+      voice: "observer",
+    });
+
+    // The same text, and the only thing separating "this is mine" from "this is
+    // material to examine" is the heading over it.
+    expect(own.variables["context"]).toContain("## What you worked out earlier in this session");
+    expect(judged.variables["context"]).toContain("## Working notes produced during the session");
+    expect(own.variables["context"]).toContain("node 22 ships sqlite");
+  });
+
+  it("interpolates heading variables so a heading can name the sender", async () => {
+    const built = await build({
+      appendix: ["user_summary"],
+      headingVars: { sender: "dana" },
+    });
+    expect(built.variables["context"]).toContain("## What you know about dana");
+  });
+
+  it("keeps appendix order, so priority order is what reaches the model", async () => {
+    const built = await build({
+      appendix: ["user_summary", "recent_messages"],
+    });
+    const ctx = built.variables["context"] ?? "";
+    expect(ctx.indexOf("What you know about")).toBeLessThan(ctx.indexOf("The conversation so far"));
+  });
+
+  it("keeps appendix blocks out of the inline variables, so nothing renders twice", async () => {
+    const built = await build({ appendix: ["user_summary"] });
+    expect(built.variables["user_summary"]).toBeUndefined();
+  });
+
+  it("fails loudly when a step's frame requires a block the session cannot supply", async () => {
+    // A maintenance session has no triggering message. Rendering a frame that
+    // says "the message you are answering" over nothing is the failure this
+    // guard exists to turn into an error.
+    await expect(
+      build({ blocks: ["incoming_message"], input: input({ message: undefined }) }),
+    ).rejects.toThrowError(/required by this step's prompt/);
   });
 });

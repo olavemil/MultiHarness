@@ -93,11 +93,19 @@ describe("shipped prompts", () => {
       console.warn = warn;
     });
 
+    // Every input any step declares as **mandatory**, all at once. No real
+    // session looks like this — a maintenance session has no message, and most
+    // sessions are never interrupted — but a step that declares a block inline
+    // has said it cannot run without one, and `buildContext` now enforces that.
+    // Leaving any of them out here would fail as a missing input rather than as
+    // the missing *variable* this test is about.
     const blockInput = {
       message: testMessage(),
       history: testHistory(),
       identity: testIdentity(),
-      completed: [],
+      completed: [
+        { name: "summarize", topic: "", outputFile: "summary.md", content: "| step |", durationMs: 1 },
+      ],
       prior: {
         id: "000001-prior",
         number: 1,
@@ -107,7 +115,36 @@ describe("shipped prompts", () => {
         request: "q",
         debrief: "",
       },
-      impressions: [],
+      impressions: [{ text: "asked a follow-up about the reasoning" }],
+      arrivals: [{ author: "dana", text: "and staging?", verdict: "adjust" }],
+      thinking: "Still circling the importer schema; sqlite looks right.",
+      latestMessage: { author: "dana", text: "did we ever settle the schema mapping?" },
+      initiativeTargets: [
+        {
+          ref: "channel:cli",
+          kind: "channel" as const,
+          name: "#deploys",
+          silentMs: 7_200_000,
+          agentHasSpoken: true,
+          messagesSinceAgentSpoke: 4,
+        },
+        {
+          ref: "dm:olav",
+          kind: "dm" as const,
+          name: "olav",
+          silentMs: 90_000_000,
+          agentHasSpoken: true,
+          messagesSinceAgentSpoke: 0,
+          summary: "Wants the answer first, then the reasoning.",
+        },
+      ],
+      curiosities: [
+        { id: 1, question: "which release the vendor is actually on", resurfaced: 3, pursued: 1, channelId: "cli", createdAt: "2026-08-14T09:00:00.000Z" },
+      ],
+      compactionTarget: {
+        topic: "metal gpu memory limit",
+        blocks: [{ text: "~36 GB", session: "000004", step: "research", at: "2026-08-03" }],
+      },
     };
 
     for (const name of KNOWN_STEP_NAMES) {

@@ -57,6 +57,29 @@ export function createCliAdapter(opts: CliAdapterOptions = {}): Adapter {
       terminal().prompt();
     },
 
+    /**
+     * There is nothing to attach an emoji *to* on a terminal, so it is printed
+     * as what it means: the agent answered, and chose not to use words.
+     *
+     * Without this the CLI had no `react` at all, so an acknowledgement was
+     * indistinguishable from the daemon being down — the exact failure the
+     * acknowledgement exists to prevent, still present on one adapter. It went
+     * unnoticed while `acknowledge` was rare; a bare mention derives to it now,
+     * so it is the common quiet outcome.
+     */
+    /** One terminal, so a DM is a line like any other — labelled as private. */
+    async dm(identityId, text) {
+      terminal().write(
+        label ? `\n${label} → ${identityId}: ${text}\n\n` : `\n→ ${identityId}: ${text}\n\n`,
+      );
+      terminal().prompt();
+    },
+
+    async react(_channelId, _messageId, emoji) {
+      terminal().write(label ? `\n${label}: :${emoji}:\n\n` : `\n:${emoji}:\n\n`);
+      terminal().prompt();
+    },
+
     status(_channelId, headline) {
       terminal().write(label ? `   · ${label}: ${headline}\n` : `   · ${headline}\n`);
     },

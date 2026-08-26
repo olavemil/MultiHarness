@@ -27,9 +27,16 @@ describe("message window", () => {
     expect(rendered).toMatch(/^\[m1\] \d{2}:\d{2} olav: morning$/);
   });
 
-  it("labels the agent's own messages as 'you'", () => {
-    const rendered = renderWindow(windowEntries([msg("agent", "Node 22.", true)], 12));
-    expect(rendered).toContain("you: Node 22.");
+  it("labels the agent's own messages by name, like everybody else's", () => {
+    // It used to render them as `you`, which forced the only step reading this
+    // window to open by disclaiming its own input — and answered part of "who
+    // is this aimed at?" before the model had read anything. With two instances
+    // in a channel it was worse: one agent's turns read `you` and its sibling's
+    // read its name, so the same conversation rendered differently depending on
+    // who was looking.
+    const rendered = renderWindow(windowEntries([msg("harness", "Node 22.", true)], 12));
+    expect(rendered).toContain("harness: Node 22.");
+    expect(rendered).not.toContain("you:");
   });
 
   it("never exposes a real message id to the model", () => {
@@ -48,7 +55,10 @@ describe("message window", () => {
     expect(windowIds(entries)).toEqual(["m1", "m2"]);
   });
 
-  it("describes an empty channel rather than rendering nothing", () => {
-    expect(renderWindow([])).toContain("no earlier messages");
+  it("renders nothing at all for an empty channel", () => {
+    // Absence is absence. The block omits itself rather than emitting a heading
+    // over "(no earlier messages)", which a step reads as content and reasons
+    // about.
+    expect(renderWindow([])).toBe("");
   });
 });

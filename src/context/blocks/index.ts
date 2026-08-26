@@ -1,7 +1,12 @@
 import type { ContextBlock } from "./types.ts";
+import { backgroundThinking } from "./backgroundThinking.ts";
+import { initiativeTargets } from "./initiativeTargets.ts";
+import { latestMessage } from "./latestMessage.ts";
 import { currentPlan } from "./currentPlan.ts";
+import { draft } from "./draft.ts";
 import { identityImpressions } from "./identityImpressions.ts";
 import { knowledgeEntry } from "./knowledgeEntry.ts";
+import { openCuriosities } from "./openCuriosities.ts";
 import { lastContribution } from "./lastContribution.ts";
 import { lastDebrief } from "./lastDebrief.ts";
 import { incomingMessage } from "./incomingMessage.ts";
@@ -11,6 +16,7 @@ import { lastSessionSummary } from "./lastSessionSummary.ts";
 import { reflection } from "./reflection.ts";
 import { messageWindow } from "./messageWindow.ts";
 import { midSessionMessages } from "./midSessionMessages.ts";
+import { maintenanceBatch } from "./maintenanceBatch.ts";
 import { priorRequest } from "./priorRequest.ts";
 import { priorStepOutput } from "./priorStepOutput.ts";
 import { reactions } from "./reactions.ts";
@@ -25,13 +31,19 @@ const ALL: readonly ContextBlock[] = [
   incomingMessage,
   recentMessages,
   request,
+  maintenanceBatch,
   priorRequest,
   requestCorrection,
   midSessionMessages,
   knowledgeEntry,
+  openCuriosities,
+  backgroundThinking,
+  initiativeTargets,
+  latestMessage,
   messageWindow,
   userSummary,
   priorStepOutput,
+  draft,
   sessionSummary,
   lastReview,
   lastSessionSummary,
@@ -50,4 +62,4 @@ export const BLOCK_REGISTRY: ReadonlyMap<string, ContextBlock> = new Map(
 
 export const KNOWN_BLOCK_NAMES: readonly string[] = ALL.map((block) => block.name);
 
-export type { BlockInput, ContextBlock } from "./types.ts";
+export type { BlockInput, ContextBlock, Voice } from "./types.ts";

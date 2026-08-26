@@ -9,10 +9,12 @@ import type { ContextBlock } from "./types.ts";
  */
 export const knowledgeEntry: ContextBlock = {
   name: "knowledge_entry",
+  heading: {
+    agent: "The notes you have recorded under this topic",
+    observer: "The notes recorded under this topic",
+  },
   resolve: ({ compactionTarget }) => {
-    if (!compactionTarget || compactionTarget.blocks.length === 0) {
-      return "(no entry was selected for compaction)";
-    }
+    if (!compactionTarget || compactionTarget.blocks.length === 0) return undefined;
     return compactionTarget.blocks
       .map((b, i) => `### Note ${i + 1} — ${b.step}, session ${b.session}, ${b.at}\n\n${b.text}`)
       .join("\n\n");

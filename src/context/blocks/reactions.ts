@@ -14,8 +14,10 @@ import type { ContextBlock } from "./types.ts";
 export const reactions: ContextBlock = {
   name: "reactions",
   keep: "tail",
-  resolve: ({ reactions: seen }) => {
-    if (!seen || seen.length === 0) return "(nobody has reacted to anything the agent wrote)";
-    return seen.map((r) => `- :${r.emoji}: from ${r.author}`).join("\n");
+  heading: {
+    agent: "What people put on your own messages",
+    observer: "Reactions people put on the agent's own messages",
   },
+  resolve: ({ reactions: seen }) =>
+    seen && seen.length > 0 ? seen.map((r) => `- :${r.emoji}: from ${r.author}`).join("\n") : undefined,
 };

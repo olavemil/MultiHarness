@@ -10,8 +10,12 @@ import type { ContextBlock } from "./types.ts";
  */
 export const currentPlan: ContextBlock = {
   name: "current_plan",
+  heading: {
+    agent: "The plan you are working to",
+    observer: "The plan in force in this channel",
+  },
   resolve: ({ plan }) => {
-    if (!plan) return "(no plan is running in this channel)";
+    if (!plan) return undefined;
     const outstanding =
       plan.outstanding.length > 0
         ? plan.outstanding.map((item) => `- ${item}`).join("\n")

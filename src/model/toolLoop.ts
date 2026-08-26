@@ -1,7 +1,7 @@
 import { z } from "zod";
-import { chat, type ChatMessage, type ToolSpec } from "./ollama.ts";
+import type { ChatMessage, ToolSpec } from "./transport.ts";
 import { withModelLease } from "./lease.ts";
-import type { ResolvedRole } from "./roles.ts";
+import { chatFor, type ResolvedRole } from "./roles.ts";
 import type { AnyTool, ToolCallRecord, ToolContext } from "../tools/types.ts";
 
 /**
@@ -88,7 +88,7 @@ export async function runToolLoop(req: ToolLoopRequest): Promise<ToolLoopResult>
       ...(req.role.keepAlive !== undefined ? { keepAlive: req.role.keepAlive } : {}),
       ...(req.role.think !== undefined ? { think: req.role.think } : {}),
     };
-    const invoke = () => chat(req.host, request, { timeoutMs: left, signal: req.signal });
+    const invoke = () => chatFor(req.role)(req.host, request, { timeoutMs: left, signal: req.signal });
 
     // Leased **per iteration**, not around the whole loop. Each iteration is one
     // call on the weights, which is what the lease is about; the tool execution
@@ -108,13 +108,13 @@ export async function runToolLoop(req: ToolLoopRequest): Promise<ToolLoopResult>
     if (response.toolCalls.length === 0) {
       // The model answered instead of calling anything; the loop is done.
       if (response.content.trim() !== "") {
-        messages.push({ role: "agent", content: response.content });
+        messages.push({ role: "assistant", content: response.content });
       }
       return { calls, transcript: renderTranscript(calls), exhausted: false, waitedMs };
     }
 
     messages.push({
-      role: "agent",
+      role: "assistant",
       content: response.content,
       tool_calls: response.toolCalls,
     });
@@ -122,7 +122,14 @@ export async function runToolLoop(req: ToolLoopRequest): Promise<ToolLoopResult>
     for (const call of response.toolCalls) {
       const record = await execute(byName, call.function.name, call.function.arguments, req.context);
       calls.push(record);
-      messages.push({ role: "tool", tool_name: record.name, content: record.result });
+      messages.push({
+        role: "tool",
+        tool_name: record.name,
+        content: record.result,
+        // Only oMLX's chat() ever sets an id; ollama's protocol correlates by
+        // name and turn order instead, so this is simply absent there.
+        ...(call.id !== undefined ? { tool_call_id: call.id } : {}),
+      });
     }
   }
 

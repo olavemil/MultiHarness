@@ -42,13 +42,11 @@ export const adjust: ModelStep<Adjustment> = {
   // The prompt asks whether the *new* information has opened a gap; without the
   // block the model never saw what arrived, so it judged the only thing in
   // front of it — the original task — and re-queued more of the same work.
-  contextBlocks: [
-    "incoming_message",
-    "mid_session_messages",
-    "recent_messages",
-    "prior_step_output",
-    "reflection",
-  ],
+  voice: "observer",
+  // The arrival is mandatory: it is the entire reason this step runs, and the
+  // step measurably judges the *original task* instead when it cannot see one.
+  contextBlocks: ["mid_session_messages"],
+  appendix: ["request", "incoming_message", "prior_step_output", "recent_messages"],
   outputFile: "adjust.md",
   buildSchema: (config: Config) => {
     const selectable = config.session.selectable_steps;

@@ -1,18 +1,18 @@
 import { z } from "zod";
 import { withModelLease } from "./lease.ts";
-import { chat, OllamaTimeout, type ChatMessage } from "./ollama.ts";
-import type { ResolvedRole } from "./roles.ts";
+import { ModelTimeout, type ChatMessage } from "./transport.ts";
+import { chatFor, type ResolvedRole } from "./roles.ts";
 
 /**
  * The single place the schema rule is enforced. No step talks to `ollama.ts`
- * directly.
+ * or `omlx.ts` directly — `chatFor` picks between them by the role's `backend`.
  *
  * Local models produce malformed output routinely, so every call is:
  *   constrained decoding -> validate -> retry once with the error fed back ->
  *   documented safe default.
  *
  * This function never throws because of a bad response. It throws only for
- * transport failures (see `OllamaError`), which are an infrastructure problem
+ * transport failures (see `ModelError`), which are an infrastructure problem
  * rather than a parse problem and should not be papered over with a default.
  */
 
@@ -105,9 +105,10 @@ export async function callModel<T>(req: CallRequest<T>): Promise<CallResult<T>> 
       // Only the large weights queue. `fast` must stay concurrent: `update` runs
       // alongside the step it supervises, and serialising the two would have the
       // supervisor wait for the thing it is supervising.
+      const runChat = chatFor(req.role);
       const leased = req.role.exclusive
-        ? await withModelLease(req.role.model, () => chat(req.host, request, options), req.signal)
-        : { value: await chat(req.host, request, options), waitedMs: 0 };
+        ? await withModelLease(req.role.model, () => runChat(req.host, request, options), req.signal)
+        : { value: await runChat(req.host, request, options), waitedMs: 0 };
       response = leased.value;
       waitedMs = leased.waitedMs;
     } catch (cause) {
@@ -115,7 +116,7 @@ export async function callModel<T>(req: CallRequest<T>): Promise<CallResult<T>> 
       // not the same as a step that produced nothing. The partial is frequently
       // a complete object missing its closing brace, and throwing away ten
       // minutes of work over one character is the worst outcome available.
-      if (!(cause instanceof OllamaTimeout)) throw cause;
+      if (!(cause instanceof ModelTimeout)) throw cause;
       const salvaged = salvage(req.schema, cause);
       if (salvaged === undefined) throw cause;
 
@@ -188,7 +189,7 @@ export async function callModel<T>(req: CallRequest<T>): Promise<CallResult<T>> 
  * truncated string, so anything it returns is content the model actually
  * produced. A partial that does not parse under that rule is discarded.
  */
-function salvage<T>(schema: z.ZodType<T>, cause: OllamaTimeout): T | undefined {
+function salvage<T>(schema: z.ZodType<T>, cause: ModelTimeout): T | undefined {
   if (!cause.timedOut) return undefined;
   const partial = cause.partialContent.trim();
   if (partial === "") return undefined;

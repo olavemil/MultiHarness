@@ -1,7 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
-import { embed } from "../model/ollama.ts";
 import type { Config } from "../config/schema.ts";
-import { resolveRole } from "../model/roles.ts";
+import { defaultTimeoutFor, embedFor, hostFor, resolveRole } from "../model/roles.ts";
 import { listEmbedded, type Entry } from "./store.ts";
 
 /**
@@ -31,8 +30,8 @@ export function cosine(a: Float32Array | readonly number[], b: Float32Array | re
 
 export async function embedText(config: Config, text: string): Promise<number[]> {
   const role = resolveRole(config, "embed");
-  const result = await embed(config.ollama.host, role.model, text, {
-    timeoutMs: config.ollama.request_timeout_ms,
+  const result = await embedFor(role)(hostFor(config, role), role.model, text, {
+    timeoutMs: defaultTimeoutFor(config, role.backend),
     ...(role.keepAlive !== undefined ? { keepAlive: role.keepAlive } : {}),
     options: role.options,
   });

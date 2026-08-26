@@ -82,6 +82,14 @@ export interface MockOllamaOptions {
    * lease test against it measures nothing and passes anyway.
    */
   delayMs?: number;
+  /**
+   * Answers `/api/embed` from the input text rather than from the queue.
+   *
+   * Similarity tests need to control *which* strings are near each other. Left
+   * to a real model that is a property of the model; queued in order it is a
+   * property of call sequence, and neither is the thing under test.
+   */
+  embed?: ((input: string) => number[]) | undefined;
 }
 
 export async function mockOllama(
@@ -106,6 +114,14 @@ export async function mockOllama(
       const raw = Buffer.concat(chunks).toString("utf8");
       requests.push({ path: req.url ?? "", body: raw ? JSON.parse(raw) : {} });
       if (options.delayMs) await new Promise((done) => setTimeout(done, options.delayMs));
+
+      if (options.embed && (req.url ?? "").includes("/api/embed")) {
+        const body = raw ? (JSON.parse(raw) as { input?: string | string[] }) : {};
+        const inputs = Array.isArray(body.input) ? body.input : [body.input ?? ""];
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ embeddings: inputs.map((i) => options.embed!(i)) }));
+        return;
+      }
 
       const next = queue.shift();
       if (!next) {

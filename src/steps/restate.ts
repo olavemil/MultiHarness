@@ -58,7 +58,9 @@ export const restate: ModelStep<RestatedRequest> = {
   // classify better. `prior_request` and `request_correction` earn their place
   // by carrying what the transcript cannot: what this was taken to mean last
   // time, and whether that turned out to be wrong.
-  contextBlocks: ["recent_messages", "incoming_message", "prior_request", "request_correction"],
+  voice: "observer",
+  contextBlocks: ["incoming_message", "recent_messages"],
+  appendix: ["request_correction", "prior_request"],
   outputFile: "request.md",
   buildSchema: () => schema,
 

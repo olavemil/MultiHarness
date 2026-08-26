@@ -22,12 +22,14 @@ export const draft: ModelStep<Draft> = {
   kind: "model",
   name: "draft",
   defaultRole: "reasoning",
-  contextBlocks: [
+  voice: "agent",
+  contextBlocks: [],
+  appendix: [
+    "prior_step_output",
+    "request",
+    "incoming_message",
     "user_summary",
     "recent_messages",
-    "incoming_message",
-    "request",
-    "prior_step_output",
     "reflection",
   ],
   outputFile: "draft.md",

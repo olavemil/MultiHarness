@@ -228,14 +228,17 @@ describe("what the agent last actually said", () => {
     expect(quiet).toContain("Node 22 or newer.");
     expect(quiet).toContain("7 messages ago");
     expect(quiet).toContain("did not speak in the exchange just before");
+    // Third person: its only reader judges the agent's work as somebody else's,
+    // and a block body cannot be swapped by voice the way its heading can.
+    expect(quiet).not.toContain("you");
 
     const recent = lastContributionBlock.resolve({
       lastContribution: { text: "Node 22 or newer.", at: "", messagesSince: 1 },
     } as never);
-    // Deliberately does *not* quote the reply: the previous session's own
-    // artifacts already carry it, and repeating it primes `satisfied`.
-    expect(recent).not.toContain("Node 22 or newer.");
-    expect(recent).toContain("just before this one");
+    // Absent, not a note saying so. The previous session's own artifacts
+    // already carry that reply, and repeating it primes `satisfied` — measured:
+    // `new-subject` and `prior-reflection-carried` both fell to 2/3.
+    expect(recent).toBeUndefined();
   });
 
   it("says plainly when there is nothing, rather than rendering empty", async () => {

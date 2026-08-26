@@ -11,11 +11,15 @@ than to rediscover.
 
 ## Where things stand
 
-Built and measured: the session pipeline (`reflect → react → restate → schedule → [research |
-reason | draft] → respond → summarize → review → [impression]`), the knowledge store with its
-gatekeeper, identities with append-only impressions, five tools, CLI and Slack adapters, and
-six clean eval suites (react 18/18, reflect 14/14, gatekeeper 8/8, debrief 8/8, compact 7/7,
-plan 8/8) plus `restate` at 9/13.
+Built: the session pipeline (`reflect → read → stance → restate → schedule → [research | reason |
+draft | plan] → respond → summarize → review → [debrief]`), the knowledge store with its
+gatekeeper, identities with append-only impressions, cross-session planning, seven tools, and CLI
+and Slack adapters.
+
+**The eval suites are stale as of the prompt rewrite, and deliberately so** — see the note at the
+head of CLAUDE.md's "Evaluating steps". The scores this file quotes (react 18/18, reflect 14/14,
+gatekeeper 8/8, debrief 8/8, compact 7/7, plan 8/8, restate 9/13) were taken against prompts that
+no longer exist and a `react` step that has been split in two. They are history, not a baseline.
 
 A reading of the question now survives across sessions — `prior_request` carries the previous
 session's `request.md` forward, and `reflect` emits a `correction` when the new message shows
@@ -370,6 +374,7 @@ for the design and the two empty-queue bugs it surfaced.
 **Still open**
 
 - **Never run live.** No maintenance session has fired from the timer rather than from a test.
+  This matters more now: the curiosity loop only ever runs there.
 - ~~**Knowledge compaction**~~ — built, and the append-only conflict resolved the way this
   predicted: a compaction supersedes rather than mutates, and the originals stay readable through
   `readAllContents`. See CLAUDE.md.
@@ -378,8 +383,13 @@ for the design and the two empty-queue bugs it surfaced.
 - **Re-reading prior sessions** for patterns a per-session `reflect` cannot see.
 - **Cron-ish scheduling.** Only idle-per-channel is built; "every morning at 09:00" needs a real
   schedule and has no user yet.
-- **Proactive sessions are a different thing, and are not this.** A maintenance session may not
-  speak. An agent that decides to *start* a conversation when idle is item 4b's engagement axis
+- ~~**Proactive sessions are a different thing, and are not this.**~~ — built, and built *as* a
+  different thing, which is what this item asked for. `initiate` is its own step with its own
+  question, run last in a maintenance session and never fused with the housekeeping decision.
+  What this entry got right: it is the engagement axis plus a write path. What it did not
+  anticipate is that the hard part is neither — it is the countable gates in
+  `core/initiative.ts`, because the one thing that must not be left to a prompt is whether now is
+  a reasonable time to interrupt somebody. An agent that decides to *start* a conversation when idle is item 4b's engagement axis
   plus a write path, and fusing it with housekeeping would repeat the `react`/`schedule` mistake:
   two unrelated questions in one call.
 
@@ -893,14 +903,21 @@ sets it low; a conversation partner sets it high.
 
 ---
 
-## 4c. Personality insert
+## 4c. Personality insert — **the static half is built**
 
 A one-line self-description injected into prompts — "You are a curious researcher and engaged
 listener" — giving the agent a stance rather than leaving it an implied assistant. It pairs with
 the engagement axis above: the line says who it is, the number says how readily it acts on that.
 
-Stored on the instance, alongside `agent.name`, since it is the clearest example of what an
-instance config is for.
+**Built:** `[agent] personality` in config, rendered as `${agent_persona}` into the frame of
+every subjective step (`stance`, `research`, `reason`, `draft`, `plan`, `respond`). Stored on the
+instance alongside `agent.name`, since it is the clearest example of what an instance config is
+for. That settles the third decision below by measurement rather than argument: it goes in the
+prompts written in the agent's own voice, and nowhere else — an objective step has no stance to
+express.
+
+**Left:** letting it revise itself, below. That is the whole risk of the item and none of it has
+been built.
 
 **Letting `review` revise it** is the interesting part and the risky one. It is the same
 compounding shape as `reflect`'s recommendations and the impression summary: written by a model,
@@ -919,8 +936,9 @@ elsewhere here:
   across many. The latter's cadence — every N, not every session — is the better fit.
 - Whether the operator's original line is recoverable. An agent that has rewritten itself into
   something unhelpful should be resettable to what was configured.
-- Whether it belongs in every prompt or only the ones where stance changes the output. It costs
-  tokens in all of them and only earns them in `respond`, `react`, and `reason`.
+- ~~Whether it belongs in every prompt or only the ones where stance changes the output.~~
+  Settled: it goes in the six steps whose `voice` is `agent` and nowhere else. The voice field
+  makes the question answerable mechanically rather than case by case.
 
 ---
 

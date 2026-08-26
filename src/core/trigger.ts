@@ -1,4 +1,5 @@
 import type { InboundMessage } from "./types.ts";
+import type { Curiosity } from "../knowledge/curiosity.ts";
 
 /**
  * Why a session is running.
@@ -33,6 +34,13 @@ export interface MaintenanceTrigger {
    * and disagreeing. Absent means "run whatever config lists".
    */
   steps?: readonly string[];
+  /**
+   * The open question this session is working on, when it is a pursuit.
+   *
+   * Carried so the harness can record that it was tried, and so nothing has to
+   * re-derive which of several open questions the session was actually about.
+   */
+  curiosity?: Curiosity | undefined;
 }
 
 /**
@@ -64,11 +72,13 @@ export const maintenanceTrigger = (
   channelId: string,
   reason: string,
   steps?: readonly string[],
+  curiosity?: MaintenanceTrigger["curiosity"],
 ): MaintenanceTrigger => ({
   kind: "maintenance",
   channelId,
   reason,
   ...(steps ? { steps } : {}),
+  ...(curiosity ? { curiosity } : {}),
 });
 
 export const continuationTrigger = (
