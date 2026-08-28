@@ -6,6 +6,19 @@ import type { Research } from "../steps/research.ts";
 import type { Thoughts } from "../steps/reason.ts";
 import type { Debrief } from "../steps/debrief.ts";
 
+export interface HarvestEvent {
+  step: string;
+  question: string;
+  outcome: "recorded" | "dropped" | "error";
+  curiosityId?: number;
+  reason?: string;
+}
+
+export interface HarvestResult {
+  recorded: number;
+  events: HarvestEvent[];
+}
+
 /**
  * The open questions a step just reported, pulled out of its sealed output.
  *
@@ -57,24 +70,72 @@ export async function harvest(args: {
   value: unknown;
   provenance: Provenance;
 }): Promise<number> {
-  if (!args.config.session.curiosity.enabled) return 0;
+  const result = await harvestWithTrace(args);
+  return result.recorded;
+}
+
+/**
+ * Same harvest path, but returns per-question outcomes for session tracing.
+ */
+export async function harvestWithTrace(args: {
+  db: DatabaseSync;
+  config: Config;
+  channelId: string;
+  stepName: string;
+  value: unknown;
+  provenance: Provenance;
+}): Promise<HarvestResult> {
+  if (!args.config.session.curiosity.enabled) return { recorded: 0, events: [] };
 
   const questions = loose(args.stepName, args.value);
   let recorded = 0;
+  const events: HarvestEvent[] = [];
   for (const question of questions) {
+    const text = question.trim();
+    if (text === "") {
+      events.push({
+        step: args.stepName,
+        question,
+        outcome: "dropped",
+        reason: "empty question",
+      });
+      continue;
+    }
+
     try {
       const kept = await recordCuriosity(
         args.db,
         args.config,
-        question,
+        text,
         args.channelId,
         args.provenance,
       );
-      if (kept) recorded++;
-    } catch {
+      if (kept) {
+        recorded++;
+        events.push({
+          step: args.stepName,
+          question: text,
+          outcome: "recorded",
+          curiosityId: kept.id,
+        });
+      } else {
+        events.push({
+          step: args.stepName,
+          question: text,
+          outcome: "dropped",
+          reason: "recordCuriosity returned undefined",
+        });
+      }
+    } catch (cause) {
       // One unrecordable question must not stop the rest, and none of them is
       // worth a failed session.
+      events.push({
+        step: args.stepName,
+        question: text,
+        outcome: "error",
+        reason: cause instanceof Error ? cause.message : String(cause),
+      });
     }
   }
-  return recorded;
+  return { recorded, events };
 }

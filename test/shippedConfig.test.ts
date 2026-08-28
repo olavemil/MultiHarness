@@ -46,7 +46,7 @@ describe("the shipped configuration", () => {
     expect(session.acknowledge_emoji).toBe("+1");
     expect(session.impression_threshold).toBe(5);
     expect(session.max_wallclock_ms).toBe(900_000);
-    expect(session.selectable_steps).toEqual(["research", "reason", "draft", "plan"]);
+    expect(session.selectable_steps).toEqual(["research", "reason", "draft", "plan", "initiate"]);
   });
 
   it("keeps the sub-tables separate from the keys around them", async () => {

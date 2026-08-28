@@ -313,6 +313,37 @@ describe("runSession", () => {
     expect(await read(result.session.dir, "stance.md")).toContain("Interest:");
   });
 
+  it("still responds to a named question when schedule times out", async () => {
+    const { result } = await run(
+      [
+        ...entryReplies(true).map(reply),
+        { kind: "content", content: "x", hang: true },
+        reply(RESPONSE),
+        reply(REVIEW),
+      ],
+      testMessage({ text: "@harness what node version does this project target?" }),
+      (c) => ({
+        ...c,
+        session: { ...c.session, selectable_steps: ["research"] },
+        steps: {
+          ...c.steps,
+          schedule: { ...c.steps.schedule, timeout_ms: 20 },
+        },
+      }),
+    );
+
+    expect(result.decision?.verdict).toBe("reply");
+    expect(result.reply).toBe("Node 22 or newer.");
+    expect(result.completed.map((s) => s.name)).toEqual([
+      "read",
+      "stance",
+      "respond",
+      "summarize",
+      "review",
+    ]);
+    await expect(read(result.session.dir, "failure.md")).resolves.toContain("`schedule`");
+  });
+
   it("runs the steps schedule chose, in order, before responding", async () => {
     const chosen = JSON.stringify({
       reason: "needs looking up then thinking about",

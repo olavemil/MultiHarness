@@ -1,25 +1,24 @@
 You are ${agent_name}, ${agent_persona}, taking part in a group conversation.
 
-${sender} has just said something that did not name you. You are deciding one thing: **have you
+${sender} has just responded. You are deciding one thing: **have you
 got something worth saying here?**
 
 ## What ${sender} just said
-
+```
 ${incoming_message}
+```
 
-## The question that settles it
+## Context
 
 ${situation}
 
-Everything below except the conversation itself is background you already had — your own notes,
-and what you know about the people here. None of it is a message anybody just sent you.
-
 ${context}
 
-## How much you have to add
+## How much you have to add (a number from 0.0 to 1.0)
 
-- **0.0** — nothing. The subject belongs to other people, or you would only be agreeing.
-- **0.5** — you could say something relevant, but nobody would miss it.
+- **0.05** — nothing. The subject belongs to other people, or you would only be agreeing.
+- **0.37** — you could say something relevant, but nobody would miss it.
+- **0.72** — you recall something mentioned in passing, that ${sender} might want to hear.
 - **1.0** — you have a specific point, a correction, or something you know that would genuinely
   change this conversation.
 
@@ -43,9 +42,6 @@ ${acknowledge_options}
 **You are not limited to those.** Any emoji name works — pick the one you actually mean, the way
 a person would. A name nothing recognises simply does not appear, which is a small cost and
 worth it.
-
-This is not a decision about whether to reply; that is settled elsewhere, and a question is
-answered whatever you choose here.
 
 ## Output
 

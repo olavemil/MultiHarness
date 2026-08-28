@@ -20,6 +20,8 @@ ${selectable_steps}
 - `draft` — write a first pass for the reply step to sharpen.
 - `plan` — write or revise the standing plan this channel works to. Only when the message is
   about the *course of work itself* (what to do over sessions, changed agreement, done status).
+- `initiate` — make contact with a third party (person or channel). Use when the answer depends
+  on getting input from someone else, or when work needs a proactive outbound message.
 
 ## What this session can still afford
 
@@ -72,4 +74,7 @@ they decide them: work out **what kind of help is missing** before naming anythi
   consequence.
 - `steps` — follow from the two above. `needs_fact` → `research`. `needs_thought` → `reason`.
   Both → research first, then reason. **Neither → empty**. Add `draft` only when the reply is
-  long or delicate enough to benefit from it. If restatement is unsettled: **empty**.
+  long or delicate enough to benefit from it. Add `plan` when the message is about the ongoing
+  course of work (agreement, scope, done status) rather than a one-off answer. Add `initiate`
+  when the answer depends on contacting someone else, or when proactive outbound contact is part
+  of the work. If restatement is unsettled: **empty**.

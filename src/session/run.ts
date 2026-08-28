@@ -19,7 +19,7 @@ import { computeSituation } from "../core/situation.ts";
 import { drawParticipation, responseProbability } from "../core/participation.ts";
 import { mentionPolicy } from "../core/mentionPolicy.ts";
 import type { InitiativeTarget } from "../core/initiative.ts";
-import { harvest } from "./harvest.ts";
+import { harvestWithTrace, type HarvestEvent } from "./harvest.ts";
 import { loadThinking, writeThinking } from "../store/thinkingStore.ts";
 import type { Pondering } from "../steps/ponder.ts";
 import { chosen, type Initiative } from "../steps/initiate.ts";
@@ -52,6 +52,7 @@ import {
   describeBudget,
   stepTimeoutMs,
   type Budget,
+  type BudgetState,
 } from "./budget.ts";
 import { getStep } from "../steps/registry.ts";
 import type { AnyStep, ModelStep } from "../steps/types.ts";
@@ -325,6 +326,7 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
   let participationTrace: Record<string, unknown> | undefined;
   /** Open questions this session recorded, for the log and the trace. */
   let harvested = 0;
+  let curiosityEvents: HarvestEvent[] = [];
   /**
    * Targets `initiate` chose, in order, and how far `outreach` has got through
    * them. The index pairs each composed message with the target it was for —
@@ -758,6 +760,20 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
           const detail = settled.reason instanceof Error ? settled.reason.message : "timed out";
           console.warn(`[session ${session.id}] ${step.name} timed out; moving on. ${detail}`);
           opts.onProgress?.(`${describeStep(step.name)} ran out of time; carrying on`);
+          // `schedule` runs before `respond` is queued. If it times out and a
+          // reply is already owed, skipping straight to the closing steps turns
+          // a pending answer into silence — exactly the failure mention
+          // detection is meant to prevent.
+          const owedReply =
+            reply === undefined &&
+            (entryVerdict === "reply" || (entryVerdict === "acknowledge" && acknowledgeReply));
+          if (
+            step.name === config.session.schedule_step &&
+            owedReply &&
+            !queue.some((item) => item.name === config.session.respond_step)
+          ) {
+            queue.push({ name: config.session.respond_step, topic: "" });
+          }
           if (queue.length === 0) queueClosingSteps();
           continue;
         }
@@ -808,7 +824,7 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
     // and forgot within seconds. Copied out, never judged: which of them is
     // worth idle time is decided later, by how often it comes back.
     if (config.session.curiosity.enabled) {
-      harvested += await harvest({
+      const result = await harvestWithTrace({
         db: knowledgeDb(),
         config,
         channelId,
@@ -816,6 +832,8 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
         value: outcome.value,
         provenance: { session: session.id, step: step.name },
       });
+      harvested += result.recorded;
+      if (result.events.length > 0) curiosityEvents = curiosityEvents.concat(result.events);
     }
 
     // Recorded *before* the verdicts are applied, and that ordering is
@@ -1197,24 +1215,27 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
     // Closing steps go on once every other step has been queued, and are the
     // only thing left after a budget stop.
     //
-    // The wallclock budget bounds *optional* work only — `selectable_steps`,
-    // the ones `schedule`/`adjust`/`plan` chose to spend it on — never the
-    // pipeline steps that follow, and never `respond`. Dropping remaining
-    // queued steps here is therefore only ever dropping selectable ones; a
-    // reply still owed is pushed back on below, and it runs at its own full
-    // configured timeout like any other non-selectable step, not whatever the
-    // exhausted budget has left. See `executeModelStep`'s `timeoutMs`.
+    // Wallclock exhaustion drops ordinary optional work but keeps message-
+    // emitting steps (`respond`, `initiate`, `outreach`) so communication can
+    // still complete. Model/tool-call exhaustion remains a hard stop.
     const state = checkBudget(budget);
     if (!closingQueued && state.exhausted && queue.length > 0) {
       budgetStop = state.reason;
-      console.warn(
-        `[session ${session.id}] budget exhausted (${state.reason}); dropping ` +
-          `${queue.length} remaining step(s).`,
-      );
       // A promised reply still gets written, from whatever was gathered.
       const owed = entryVerdict !== undefined && wantsReply(entryVerdict) && reply === undefined;
+      const keep = isWallclockExhausted(state)
+        ? queue.filter((item) => isWallclockExemptStep(item.name, config))
+        : [];
+      const dropped = queue.length - keep.length;
       queue.length = 0;
-      if (owed) queue.push({ name: config.session.respond_step, topic: "" });
+      queue.push(...keep);
+      if (owed && !queue.some((item) => item.name === config.session.respond_step)) {
+        queue.push({ name: config.session.respond_step, topic: "" });
+      }
+      console.warn(
+        `[session ${session.id}] budget exhausted (${state.reason}); dropping ` +
+          `${dropped} remaining step(s), keeping ${queue.length}.`,
+      );
     }
 
     if (queue.length === 0) queueClosingSteps();
@@ -1283,6 +1304,17 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
     await writeParticipationTrace(session, participationTrace);
   }
 
+  if (config.session.curiosity.enabled) {
+    await writeParticipationTrace(session, {
+      file: "curiosity",
+      harvested,
+      observed: curiosityEvents.length,
+      events: curiosityEvents,
+      note:
+        "Per-question harvest outcomes. Dropped/error entries make curiosity write failures auditable without querying sqlite.",
+    });
+  }
+
   return {
     session,
     completed,
@@ -1346,6 +1378,13 @@ const isTimeout = (cause: unknown): boolean =>
   cause instanceof ModelTimeout ||
   (cause instanceof Error && (cause.name === "TimeoutError" || /timed out/i.test(cause.message)));
 
+/** Steps that still run at full timeout and survive wallclock budget exhaustion. */
+const isWallclockExemptStep = (stepName: string, config: Config): boolean =>
+  stepName === config.session.respond_step || stepName === "initiate" || stepName === "outreach";
+
+const isWallclockExhausted = (state: BudgetState): boolean =>
+  state.exhausted && (state.reason?.startsWith("wallclock ") ?? false);
+
 interface StepOutcome {
   completed: CompletedStep;
   value: unknown;
@@ -1379,10 +1418,12 @@ async function executeModelStep(
   const startedAtIso = new Date().toISOString();
 
   const model = resolveStepModel(config, step.name, step.defaultRole, step.defaultTools);
+  const wallclockSelectable =
+    config.session.selectable_steps.includes(step.name) && !isWallclockExemptStep(step.name, config);
   const timeoutMs = stepTimeoutMs(
     ctx.budget,
     model.timeoutMs,
-    config.session.selectable_steps.includes(step.name),
+    wallclockSelectable,
   );
   const prepared = await prepareModelStep({
     step,
@@ -1417,10 +1458,9 @@ async function executeModelStep(
       signal: ctx.signal,
     });
     ctx.budget.toolCalls += loop.calls.length;
-    // Queued time is not the session's to pay for, the same as `callModel`'s.
-    // The tool loop is where the large models actually spend their time, so
-    // omitting this charged a session for every other instance's research.
-    ctx.budget.waitedMs += loop.waitedMs;
+    // Queued time and actual tool execution are not model-runtime wallclock.
+    // Excluding both keeps selectable-step clamps about model work, not I/O.
+    ctx.budget.waitedMs += loop.waitedMs + loop.toolMs;
     toolCalls = loop.calls;
     toolTranscript = loop.transcript;
   }

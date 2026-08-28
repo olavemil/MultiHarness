@@ -23,6 +23,8 @@ export interface ToolLoopResult {
   exhausted: boolean;
   /** Total time spent queued for an exclusive model. Excluded from the session budget. */
   waitedMs: number;
+  /** Total time spent executing tools between model turns. */
+  toolMs: number;
 }
 
 export interface ToolLoopRequest {
@@ -56,19 +58,20 @@ export const toolSpec = (tool: AnyTool): ToolSpec => ({
 });
 
 export async function runToolLoop(req: ToolLoopRequest): Promise<ToolLoopResult> {
-  const maxIterations = req.maxIterations ?? 6;
+  const maxIterations = req.maxIterations ?? 16;
   const byName = new Map(req.tools.map((tool) => [tool.name, tool]));
   const specs = req.tools.map(toolSpec);
 
   const messages: ChatMessage[] = [{ role: "user", content: req.prompt }];
   const calls: ToolCallRecord[] = [];
   let waitedMs = 0;
+  let toolMs = 0;
 
-  // Wall-clock deadline for the loop as a whole. Queued time is added back as
-  // it accrues: waiting for the lease is not this step's to pay for, exactly as
-  // the session budget treats it.
+  // Wall-clock deadline for the loop as a whole. Time not spent running model
+  // inference is added back as it accrues: waiting for the lease and executing
+  // tools are not this step's model-runtime budget.
   const startedAt = Date.now();
-  const remaining = () => req.timeoutMs - (Date.now() - startedAt - waitedMs);
+  const remaining = () => req.timeoutMs - (Date.now() - startedAt - waitedMs - toolMs);
 
   for (let iteration = 0; iteration < maxIterations; iteration++) {
     const left = remaining();
@@ -77,7 +80,7 @@ export async function runToolLoop(req: ToolLoopRequest): Promise<ToolLoopResult>
         `[tools:${req.label}] out of time after ${iteration} iteration(s); ` +
           `continuing with what it gathered.`,
       );
-      return { calls, transcript: renderTranscript(calls), exhausted: true, waitedMs };
+      return { calls, transcript: renderTranscript(calls), exhausted: true, waitedMs, toolMs };
     }
 
     const request = {
@@ -110,7 +113,7 @@ export async function runToolLoop(req: ToolLoopRequest): Promise<ToolLoopResult>
       if (response.content.trim() !== "") {
         messages.push({ role: "assistant", content: response.content });
       }
-      return { calls, transcript: renderTranscript(calls), exhausted: false, waitedMs };
+      return { calls, transcript: renderTranscript(calls), exhausted: false, waitedMs, toolMs };
     }
 
     messages.push({
@@ -121,6 +124,7 @@ export async function runToolLoop(req: ToolLoopRequest): Promise<ToolLoopResult>
 
     for (const call of response.toolCalls) {
       const record = await execute(byName, call.function.name, call.function.arguments, req.context);
+      toolMs += record.durationMs;
       calls.push(record);
       messages.push({
         role: "tool",
@@ -137,7 +141,7 @@ export async function runToolLoop(req: ToolLoopRequest): Promise<ToolLoopResult>
     `[tools:${req.label}] stopped after ${maxIterations} iterations with the model still ` +
       `calling tools; continuing with what it gathered.`,
   );
-  return { calls, transcript: renderTranscript(calls), exhausted: true, waitedMs };
+  return { calls, transcript: renderTranscript(calls), exhausted: true, waitedMs, toolMs };
 }
 
 async function execute(

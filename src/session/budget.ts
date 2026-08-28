@@ -37,12 +37,12 @@ export interface Budget extends BudgetLimits {
   modelCalls: number;
   toolCalls: number;
   /**
-   * Time spent queued behind another session's call on the same model.
+   * Time excluded from wallclock because it is not model-runtime work:
+   * queueing behind another session's call on the same model, and time spent
+   * executing tools between model turns.
    *
-   * Excluded from wallclock, because waiting for a resource is not work. A
-   * session that sat three minutes behind somebody else's `research` has not
-   * spent three minutes of its own allowance, and charging it would let a busy
-   * machine silently shrink every session on it.
+   * Excluded from wallclock so selectable-step clamps are based on model work,
+   * not resource waits or external I/O latency.
    */
   waitedMs: number;
 }
@@ -61,7 +61,7 @@ export interface BudgetState {
   reason?: string;
 }
 
-/** Wallclock the session actually spent working, with queueing taken out. */
+/** Wallclock spent on model-runtime work, with excluded time taken out. */
 export const workingMs = (budget: Budget, now = Date.now()): number =>
   Math.max(0, now - budget.startedAt - budget.waitedMs);
 

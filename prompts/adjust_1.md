@@ -22,6 +22,9 @@ ${selectable_steps}
 - `research` — look something up, in the knowledge store or on the web.
 - `reason` — work something out from what is already gathered.
 - `draft` — write a first pass for the reply step to sharpen.
+- `plan` — revise the standing plan when the arrival changes what the channel is working toward.
+- `initiate` — contact a third party (person or channel) when the arrival makes outbound contact
+  necessary.
 
 ## Decision order
 
@@ -59,3 +62,5 @@ anything remains before naming anything to do.
   something holds. **A question about what the gathered facts imply is this, not a fact.**
 - `steps` — **must be empty when `finished` is true.** Otherwise follow from the two booleans:
   `needs_fact` → `research`, `needs_thought` → `reason`. Not both unless both are genuinely true.
+  Add `plan` only when the arrival changes the ongoing course of work. Add `initiate` only when
+  outbound contact is needed to proceed.

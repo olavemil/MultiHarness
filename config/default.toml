@@ -46,7 +46,7 @@ request_timeout_ms = 300000
 # phi3.5 remains pulled and is the right choice if this role ever moves to work
 # that is genuinely mechanical rather than a judgement call.
 [roles.fast]
-model = "mlx-community/Qwen3.8-27B-4bit"
+model = "mlx-community/Qwen3-4B-Instruct-2507-8bit"
 keep_alive = -1
 # Deliberately not exclusive. `update` runs *alongside* the step it supervises,
 # so serialising this role would have the supervisor wait for the thing it is
@@ -60,7 +60,7 @@ num_ctx = 8192
 # ceiling alongside fast and embed, and letting it unload costs ~60s of reload
 # on the first reasoning step of every cold session.
 [roles.reasoning]
-model = "mlx-community/Qwen3.8-27B-4bit"
+model = "scottlowry/Qwen3.8-27B-oQ4e-mtp"
 keep_alive = -1
 # One call at a time on these weights. Two sessions reaching a reasoning step
 # together do not get two models — ollama queues them behind each other — so
@@ -80,7 +80,7 @@ num_ctx = 16384
 # prompt. Re-splitting this to a dedicated model later is a change to this table
 # alone.
 [roles.digest]
-model = "mlx-community/Qwen3.8-27B-4bit"
+model = "scottlowry/qwen3.8-27B-OQ4E-mtp"
 think = false
 no_tools = true
 # Same weights as `reasoning`, so the same queue — see above.
@@ -145,7 +145,7 @@ stance_step = "stance"
 #
 # Choosing between these is `plan`'s job, not react's — so a named message
 # still skips the react call entirely and goes straight to structuring.
-selectable_steps = ["research", "reason", "draft", "plan"]
+selectable_steps = ["research", "reason", "draft", "plan", "initiate"]
 # Restates the incoming message as a self-contained request before anything acts
 # on it. "Could you draft a plan for this?" gives a step a pronoun with no
 # referent; recent_messages is a transcript rather than a brief, so every step
