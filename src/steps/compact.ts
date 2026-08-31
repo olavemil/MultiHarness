@@ -35,7 +35,9 @@ export const compact: ModelStep<Compaction> = {
   // channel it happens to run in has nothing to do with what an entry says —
   // handing it `recent_messages` would invite it to fold the current
   // conversation into a durable record of something else.
+  voice: "observer",
   contextBlocks: ["knowledge_entry"],
+  appendix: ["maintenance_batch"],
   outputFile: "compaction.md",
   buildSchema: () => schema,
 

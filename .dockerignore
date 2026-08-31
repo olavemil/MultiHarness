@@ -1,0 +1,27 @@
+# Everything the daemon does not need at runtime.
+#
+# `config/` and `prompts/` are deliberately NOT here: both are resolved relative
+# to the source file, so the image has to mirror the repository layout or the
+# daemon cannot find its own defaults.
+node_modules/
+.git/
+.gitignore
+
+# Host-only: the daemon ships without a test runner or an eval harness.
+test/
+eval/
+
+# Agent and session data never belongs in an image — it is mounted at runtime.
+knowledge/
+files/
+sessions/
+channels/
+identities/
+
+*.md
+!prompts/**/*.md
+.DS_Store
+*.log
+Dockerfile
+.dockerignore
+compose.yaml

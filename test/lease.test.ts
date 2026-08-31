@@ -2,8 +2,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import { z } from "zod";
 import { callModel } from "../src/model/call.ts";
 import { queueDepth, resetLeases, withModelLease } from "../src/model/lease.ts";
+import { runToolLoop } from "../src/model/toolLoop.ts";
+import type { AnyTool } from "../src/tools/types.ts";
 import { checkBudget, createBudget, remainingMs, workingMs } from "../src/session/budget.ts";
-import { mockOllama, reply, type MockOllama } from "./helpers/mockOllama.ts";
+import { mockOllama, reply, toolCall, type MockOllama } from "./helpers/mockOllama.ts";
 
 /**
  * One call at a time on the large weights.
@@ -134,6 +136,7 @@ describe("callModel and the lease", () => {
   const role = (over: Record<string, unknown> = {}) => ({
     name: "reasoning",
     model: "big",
+    backend: "ollama" as const,
     options: {},
     noTools: false,
     exclusive: true,
@@ -153,15 +156,21 @@ describe("callModel and the lease", () => {
   }
 
   it("records the wait in the trace", async () => {
-    const server = await mockOllama([reply('{"message":"one"}'), reply('{"message":"two"}')]);
+    // The original of this test asserted `toBeGreaterThanOrEqual(0)` on the
+    // second wait, which is true of every number a `waitedMs` field can hold —
+    // it would have passed against a lease that recorded nothing at all, and it
+    // did pass against a tool loop that never took the lease. A held server is
+    // what makes the wait a real quantity rather than a race.
+    const server = await mockOllama([reply('{"message":"one"}'), reply('{"message":"two"}')], {
+      delayMs: 60,
+    });
     cleanups.push(server.close);
 
     const [a, b] = await Promise.all([call(true, server), call(true, server)]);
-    // One of the two queued behind the other; which is not fixed, but exactly
-    // one should report having waited.
+    // Which of the two queued is not fixed; that exactly one did, is.
     const waits = [a.trace.waitedMs, b.trace.waitedMs].sort((x, y) => x - y);
     expect(waits[0]).toBe(0);
-    expect(waits[1]).toBeGreaterThanOrEqual(0);
+    expect(waits[1]).toBeGreaterThanOrEqual(50);
   });
 
   it("does not queue a role that is not exclusive", async () => {
@@ -171,6 +180,68 @@ describe("callModel and the lease", () => {
 
     const both = await Promise.all([call(false, server), call(false, server)]);
     expect(both.every((r) => r.trace.waitedMs === 0)).toBe(true);
+  });
+});
+
+describe("the tool loop takes the lease too", () => {
+  // The miss that mattered most. `research` and `reason` are the two steps the
+  // lease exists for, and they ran their whole tool loop through `chat()`
+  // directly — unleased — while the cheap final schema call took it dutifully.
+  // Found by running two instances and seeing `waitedMs: 0` on every step of a
+  // 866s session in which one of them was plainly queued.
+  const role = (exclusive: boolean) => ({
+    name: "reasoning",
+    model: "big",
+    backend: "ollama" as const,
+    options: {},
+    noTools: false,
+    exclusive,
+  });
+
+  const search: AnyTool = {
+    name: "knowledge_search",
+    description: "search",
+    parameters: z.object({}),
+    readOnly: true,
+    run: async () => "nothing found",
+  };
+
+  async function loop(exclusive: boolean, server: MockOllama) {
+    return runToolLoop({
+      label: "research",
+      host: server.host,
+      role: role(exclusive),
+      prompt: "p",
+      tools: [search],
+      context: {} as never,
+      timeoutMs: 5_000,
+    });
+  }
+
+  it("queues one loop behind the other and reports the wait", async () => {
+    // Two iterations each: a tool call, then an answer. Four calls in all, so
+    // the two loops genuinely interleave rather than finishing back to back.
+    const server = await mockOllama(
+      [
+        toolCall("knowledge_search"),
+        reply("done"),
+        toolCall("knowledge_search"),
+        reply("done"),
+      ],
+      { delayMs: 40 },
+    );
+    cleanups.push(server.close);
+
+    const [a, b] = await Promise.all([loop(true, server), loop(true, server)]);
+    expect(Math.max(a.waitedMs, b.waitedMs)).toBeGreaterThanOrEqual(30);
+  });
+
+  it("leaves a non-exclusive role alone", async () => {
+    const server = await mockOllama([reply("done"), reply("done")], { delayMs: 20 });
+    cleanups.push(server.close);
+
+    const both = await Promise.all([loop(false, server), loop(false, server)]);
+    expect(both.every((r) => r.waitedMs === 0)).toBe(true);
   });
 });
 

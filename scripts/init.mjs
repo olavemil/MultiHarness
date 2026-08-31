@@ -23,7 +23,10 @@ import { createInterface } from "node:readline/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 
-const ROOT = path.join(homedir(), ".multiharness");
+// Honours `MULTIHARNESS_ROOT` for the same reason `instance/discover.ts` does:
+// run inside the container without it, this would create the instance outside
+// the mount, where the daemon will never look for it.
+const ROOT = process.env.MULTIHARNESS_ROOT ?? path.join(homedir(), ".multiharness");
 const argv = process.argv.slice(2);
 
 const flag = (name) => {

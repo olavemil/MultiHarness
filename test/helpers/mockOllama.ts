@@ -19,6 +19,15 @@ export interface MockOllama {
   host: string;
   /** Every request received, in order. */
   requests: MockRequest[];
+  /**
+   * The most requests in flight at once.
+   *
+   * The only honest way to assert *concurrency* against this server: replies are
+   * served in arrival order regardless of path, so two overlapping calls race
+   * for the same one and any timing-based assertion would be flaky rather than
+   * rigorous. This counts overlap directly.
+   */
+  maxConcurrent: () => number;
   close(): Promise<void>;
 }
 
@@ -40,7 +49,7 @@ export type MockReply =
     }
   | { kind: "status"; status: number; body: string }
   /** `/api/embed` answers with plain JSON, not the NDJSON stream. */
-  | { kind: "embed"; vector: number[] }
+  | { kind: "embed"; vectors: number[][] }
   /** An agent turn that asks for tools instead of answering. */
   | { kind: "tools"; calls: { name: string; args: Record<string, unknown> }[] };
 
@@ -54,23 +63,65 @@ export const toolCall = (name: string, args: Record<string, unknown> = {}): Mock
 });
 
 /** Convenience: an embedding response for `/api/embed`. */
-export const embedding = (vector: number[]): MockReply => ({ kind: "embed", vector });
+export const embedding = (vector: number[]): MockReply => ({ kind: "embed", vectors: [vector] });
+
+/** `/api/embed` answers a batch in one response; `standing` sends one. */
+export const embeddings = (vectors: number[][]): MockReply => ({ kind: "embed", vectors });
 
 /**
  * Stands in for ollama's `/api/chat`, serving `replies` in order. Streams the
  * content in two fragments so the NDJSON aggregation path is exercised rather
  * than bypassed by a single-chunk response.
  */
-export async function mockOllama(replies: MockReply[]): Promise<MockOllama> {
+export interface MockOllamaOptions {
+  /**
+   * Hold each request this long before answering.
+   *
+   * Needed wherever a test is about *overlap*: an instantly-answering server
+   * lets two "concurrent" calls finish before either could have queued, so a
+   * lease test against it measures nothing and passes anyway.
+   */
+  delayMs?: number;
+  /**
+   * Answers `/api/embed` from the input text rather than from the queue.
+   *
+   * Similarity tests need to control *which* strings are near each other. Left
+   * to a real model that is a property of the model; queued in order it is a
+   * property of call sequence, and neither is the thing under test.
+   */
+  embed?: ((input: string) => number[]) | undefined;
+}
+
+export async function mockOllama(
+  replies: MockReply[],
+  options: MockOllamaOptions = {},
+): Promise<MockOllama> {
   const requests: MockRequest[] = [];
   const queue = [...replies];
+  let inFlight = 0;
+  let peak = 0;
 
   const server: Server = createServer((req, res) => {
     const chunks: Buffer[] = [];
     req.on("data", (c: Buffer) => chunks.push(c));
-    req.on("end", () => {
+    req.on("end", async () => {
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      // `finish`, not `close`: keep-alive holds the socket open long after the
+      // response, so counting to socket close reports overlap that never
+      // happened — and a concurrency assertion that cannot fail is worthless.
+      res.on("finish", () => void inFlight--);
       const raw = Buffer.concat(chunks).toString("utf8");
       requests.push({ path: req.url ?? "", body: raw ? JSON.parse(raw) : {} });
+      if (options.delayMs) await new Promise((done) => setTimeout(done, options.delayMs));
+
+      if (options.embed && (req.url ?? "").includes("/api/embed")) {
+        const body = raw ? (JSON.parse(raw) as { input?: string | string[] }) : {};
+        const inputs = Array.isArray(body.input) ? body.input : [body.input ?? ""];
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ embeddings: inputs.map((i) => options.embed!(i)) }));
+        return;
+      }
 
       const next = queue.shift();
       if (!next) {
@@ -81,7 +132,7 @@ export async function mockOllama(replies: MockReply[]): Promise<MockOllama> {
 
       if (next.kind === "embed") {
         res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify({ embeddings: [next.vector] }));
+        res.end(JSON.stringify({ embeddings: next.vectors }));
         return;
       }
 
@@ -142,6 +193,7 @@ export async function mockOllama(replies: MockReply[]): Promise<MockOllama> {
   return {
     host: `http://127.0.0.1:${port}`,
     requests,
+    maxConcurrent: () => peak,
     close: async () => {
       server.close();
       await once(server, "close");

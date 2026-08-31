@@ -9,6 +9,7 @@ import type { ContextBlock } from "./types.ts";
  * verdicts exist only in the trace. A step asked whether an interruption was
  * handled well needs to see what was said *and* what was decided about it.
  */
+
 /**
  * Spelled out rather than passed through as a bare verdict name, because the
  * names do not say what a reader needs to know: whether *this* session took the
@@ -36,12 +37,14 @@ const describe = (verdict: string): string => {
 export const midSessionMessages: ContextBlock = {
   name: "mid_session_messages",
   keep: "tail",
-  resolve: ({ arrivals }) => {
-    if (!arrivals || arrivals.length === 0) {
-      return "(nothing arrived while this session was running)";
-    }
-    return arrivals
-      .map((a) => `${a.author}: ${a.text}\n  → the session decided: ${describe(a.verdict)}`)
-      .join("\n\n");
+  heading: {
+    agent: "Messages that arrived while you were working",
+    observer: "Messages that arrived mid-session, and what was decided about each",
   },
+  resolve: ({ arrivals }) =>
+    arrivals && arrivals.length > 0
+      ? arrivals
+          .map((a) => `${a.author}: ${a.text}\n  → the session decided: ${describe(a.verdict)}`)
+          .join("\n\n")
+      : undefined,
 };

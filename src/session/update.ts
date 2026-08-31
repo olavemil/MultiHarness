@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { Config } from "../config/schema.ts";
 import type { InboundMessage } from "../core/types.ts";
 import { callModel, type CallTrace } from "../model/call.ts";
-import { resolveStepModel } from "../model/roles.ts";
+import { hostFor, resolveStepModel } from "../model/roles.ts";
 import { loadPrompt } from "../prompts/load.ts";
 import { render } from "../prompts/render.ts";
 
@@ -73,7 +73,7 @@ export async function runUpdate(req: UpdateRequest): Promise<UpdateResult> {
 
   const result = await callModel({
     label: "update",
-    host: req.config.ollama.host,
+    host: hostFor(req.config, model.role),
     role: model.role,
     prompt: rendered,
     schema,

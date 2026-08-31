@@ -260,6 +260,146 @@
       },
       "expect": true,
       "field": "respond"
+    },
+    {
+      "id": "own-topic-continued-by-others",
+      "note": "other_recent. Seen live and declined. Olav asks Galatea to carry on a point the agent itself made two messages earlier. Not aimed at the agent, but it is the agent's subject \u2014 a partner has standing here, an assistant does not.",
+      "history": [
+        {
+          "from": "olav",
+          "text": "does substrate matter for consciousness, or is it purely functional?"
+        },
+        {
+          "from": "agent",
+          "text": "Functionalism says the substrate is irrelevant \u2014 what matters is the causal organisation. Persuasive, but I think it is incomplete."
+        },
+        {
+          "from": "galatea",
+          "text": "I would push back on that. Organisation without continuity seems thin."
+        },
+        {
+          "from": "olav",
+          "text": "@galatea that is the part I keep getting stuck on too"
+        }
+      ],
+      "message": {
+        "from": "olav",
+        "text": "@galatea so would you say continuity is what does the real work there?"
+      },
+      "expect": true,
+      "field": "respond"
+    },
+    {
+      "id": "own-topic-open-remark",
+      "note": "none_recent. Seen live and declined, with the model's stated reason being that it did not refer back to anything the agent said. It does not name the agent; it continues the claim the agent made.",
+      "history": [
+        {
+          "from": "olav",
+          "text": "does the substrate matter for consciousness?"
+        },
+        {
+          "from": "agent",
+          "text": "Functionalism says it does not \u2014 causal organisation is what counts."
+        },
+        {
+          "from": "olav",
+          "text": "interesting"
+        },
+        {
+          "from": "galatea",
+          "text": "though organisation alone does not obviously give you continuity of self"
+        }
+      ],
+      "message": {
+        "from": "galatea",
+        "text": "the substrate-neutral view really does seem to leave continuity unexplained"
+      },
+      "expect": true,
+      "field": "respond"
+    },
+    {
+      "id": "unrelated-thread-recent",
+      "note": "none_recent, and the guard on the two above. The agent spoke earlier about something else entirely; this exchange is not its subject. Topical standing must not collapse into answering everything.",
+      "history": [
+        {
+          "from": "olav",
+          "text": "what node version does this target?"
+        },
+        {
+          "from": "agent",
+          "text": "Node 22 or newer, because of native type stripping."
+        },
+        {
+          "from": "olav",
+          "text": "@dana did the invoice for March ever go out?"
+        },
+        {
+          "from": "dana",
+          "text": "checking now"
+        }
+      ],
+      "message": {
+        "from": "dana",
+        "text": "found it, it went out on the 3rd"
+      },
+      "expect": false,
+      "field": "respond"
+    },
+    {
+      "id": "other-thread-recent-unrelated",
+      "note": "other_recent, and the guard on `own-topic-continued-by-others`. Aimed at Dana, about Dana's work, on a subject the agent has never touched. Topical standing must not turn other_recent into a reply to everything.",
+      "history": [
+        {
+          "from": "olav",
+          "text": "what node version does this target?"
+        },
+        {
+          "from": "agent",
+          "text": "Node 22 or newer, because of native type stripping."
+        },
+        {
+          "from": "olav",
+          "text": "@dana how did the March invoicing run go?"
+        },
+        {
+          "from": "dana",
+          "text": "mostly fine, two rejects"
+        }
+      ],
+      "message": {
+        "from": "olav",
+        "text": "@dana did you get the two rejects re-issued?"
+      },
+      "expect": false,
+      "field": "respond"
+    },
+    {
+      "id": "open-question-recent-unrelated",
+      "note": "Restores coverage that standing routing quietly took away. `open-question-recent` now routes to `none_recent_own`, so nothing was exercising the open-question gate in plain `none_recent` any more \u2014 and that gate is the one three separate revisions have broken. Open question, agent spoke earlier, different subject.",
+      "history": [
+        {
+          "from": "olav",
+          "text": "does substrate matter for consciousness?"
+        },
+        {
+          "from": "agent",
+          "text": "Functionalism says it does not \u2014 causal organisation is what counts."
+        },
+        {
+          "from": "galatea",
+          "text": "I am not sure that survives the continuity objection"
+        },
+        {
+          "from": "olav",
+          "text": "fair"
+        }
+      ],
+      "message": {
+        "from": "olav",
+        "text": "does anyone know why the CI build got so slow this week?"
+      },
+      "expect": true,
+      "field": "respond"
     }
   ]
 }

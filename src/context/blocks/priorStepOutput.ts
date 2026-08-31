@@ -1,31 +1,59 @@
 import type { ContextBlock } from "./types.ts";
 
 /** Steps whose output is bookkeeping rather than work product. */
-const STRUCTURAL = new Set(["react", "restate", "summarize"]);
+const STRUCTURAL = new Set(["read", "stance", "restate", "schedule", "summarize"]);
 
 /**
  * Substantive output of steps already sealed in this session.
  *
- * `react`'s decision is a routing artefact and `summarize`'s table is
+ * `read` and `stance` are routing artefacts and `summarize`'s table is
  * bookkeeping — neither is material for writing a reply or judging one, and
  * `session_summary` already carries the latter for steps that want it.
  *
  * `restate` is excluded for both reasons at once: every step that reads this
  * block also declares `request`, so including it here would spend the budget
- * twice, and it would arrive under "what earlier steps produced" — framing a
+ * twice, and it would arrive under "what you worked out earlier" — framing a
  * restatement of the question as though it were an answer to it.
+ *
+ * The `draft` step is excluded too, but by its readers rather than here:
+ * `respond` declares `draft` as its own first appendix so a written reply
+ * arrives labelled as one, instead of buried among research findings.
  */
 export const priorStepOutput: ContextBlock = {
   name: "prior_step_output",
+  heading: {
+    agent: "What you worked out earlier in this session",
+    observer: "Working notes produced during the session",
+  },
   resolve: ({ completed }) => {
-    const relevant = completed.filter((step) => !STRUCTURAL.has(step.name));
-    if (relevant.length === 0) return "(no preparatory steps ran)";
+    const relevant = completed.filter(
+      (step) => !STRUCTURAL.has(step.name) && step.name !== "draft",
+    );
+    if (relevant.length === 0) return undefined;
 
     return relevant
       .map((step) => {
-        const heading = step.topic ? `## ${step.name} — ${step.topic}` : `## ${step.name}`;
-        return `${heading}\n\n${step.content.trim()}`;
+        const label = step.topic ? `${step.name} (${step.topic})` : step.name;
+        return `${label}: ${summarise(step.content)}`;
       })
-      .join("\n\n");
+      .join("\n");
   },
 };
+
+function summarise(content: string): string {
+  const lines = content
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "" && line !== "```" && !line.startsWith("#") && !line.startsWith("|"));
+
+  const cleaned = (lines[0] ?? "(output produced)")
+    .replace(/^[-*]\s+/, "")
+    .replace(/^\*\*([^*]+)\*\*\s*:?\s*/, "$1: ")
+    .replace(/`/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const MAX = 220;
+  if (cleaned.length <= MAX) return cleaned;
+  return `${cleaned.slice(0, MAX - 1).trimEnd()}…`;
+}

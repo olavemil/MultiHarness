@@ -1,7 +1,11 @@
 import type { ContextBlock } from "./types.ts";
 
-/** The previous session's reflection in this channel. Empty on the first session here. */
+/** The previous session's reflection in this channel. Absent on the first session here. */
 export const lastReflection: ContextBlock = {
   name: "last_reflection",
-  resolve: ({ prior }) => prior?.reflection.trim() || "(no previous session in this channel)",
+  heading: {
+    agent: "What you told yourself last time",
+    observer: "What the previous session told itself to do",
+  },
+  resolve: ({ prior }) => prior?.reflection.trim() || undefined,
 };

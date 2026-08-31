@@ -12,7 +12,9 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "eval": "node eval/run.ts",
-    "init": "node scripts/init.mjs"
+    "init": "node scripts/init.mjs",
+    "stop": "node scripts/stop.mjs",
+    "daemon": "node src/daemon.ts"
   },
   "dependencies": {
     "@slack/bolt": "^5.0.0",

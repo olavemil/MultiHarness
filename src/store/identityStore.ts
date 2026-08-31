@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { Identity } from "../core/types.ts";
 import type { Paths } from "./paths.ts";
@@ -39,4 +39,30 @@ export async function saveIdentity(paths: Paths, identity: Identity): Promise<vo
     `${JSON.stringify(identity, null, 2)}\n`,
     "utf8",
   );
+}
+
+/**
+ * Every identity on file. Used only by the step deciding whether to message
+ * somebody unprompted; the reply path always knows exactly whose message it is
+ * holding.
+ */
+export async function listIdentities(paths: Paths): Promise<Identity[]> {
+  let files: string[];
+  try {
+    files = await readdir(paths.identities);
+  } catch {
+    return [];
+  }
+
+  const found: Identity[] = [];
+  for (const file of files) {
+    if (!file.endsWith(".json")) continue;
+    try {
+      const raw = await readFile(path.join(paths.identities, file), "utf8");
+      found.push(JSON.parse(raw) as Identity);
+    } catch {
+      // One unreadable record must not hide every other person on file.
+    }
+  }
+  return found;
 }

@@ -11,11 +11,15 @@ than to rediscover.
 
 ## Where things stand
 
-Built and measured: the session pipeline (`reflect → react → restate → schedule → [research |
-reason | draft] → respond → summarize → review → [impression]`), the knowledge store with its
-gatekeeper, identities with append-only impressions, five tools, CLI and Slack adapters, and
-six clean eval suites (react 13/13, reflect 12/12, gatekeeper 8/8, debrief 8/8, compact 7/7,
-plan 8/8) plus `restate` at 9/13.
+Built: the session pipeline (`reflect → read → stance → restate → schedule → [research | reason |
+draft | plan] → respond → summarize → review → [debrief]`), the knowledge store with its
+gatekeeper, identities with append-only impressions, cross-session planning, seven tools, and CLI
+and Slack adapters.
+
+**The eval suites are stale as of the prompt rewrite, and deliberately so** — see the note at the
+head of CLAUDE.md's "Evaluating steps". The scores this file quotes (react 18/18, reflect 14/14,
+gatekeeper 8/8, debrief 8/8, compact 7/7, plan 8/8, restate 9/13) were taken against prompts that
+no longer exist and a `react` step that has been split in two. They are history, not a baseline.
 
 A reading of the question now survives across sessions — `prior_request` carries the previous
 session's `request.md` forward, and `reflect` emits a `correction` when the new message shows
@@ -370,6 +374,7 @@ for the design and the two empty-queue bugs it surfaced.
 **Still open**
 
 - **Never run live.** No maintenance session has fired from the timer rather than from a test.
+  This matters more now: the curiosity loop only ever runs there.
 - ~~**Knowledge compaction**~~ — built, and the append-only conflict resolved the way this
   predicted: a compaction supersedes rather than mutates, and the originals stay readable through
   `readAllContents`. See CLAUDE.md.
@@ -378,8 +383,13 @@ for the design and the two empty-queue bugs it surfaced.
 - **Re-reading prior sessions** for patterns a per-session `reflect` cannot see.
 - **Cron-ish scheduling.** Only idle-per-channel is built; "every morning at 09:00" needs a real
   schedule and has no user yet.
-- **Proactive sessions are a different thing, and are not this.** A maintenance session may not
-  speak. An agent that decides to *start* a conversation when idle is item 4b's engagement axis
+- ~~**Proactive sessions are a different thing, and are not this.**~~ — built, and built *as* a
+  different thing, which is what this item asked for. `initiate` is its own step with its own
+  question, run last in a maintenance session and never fused with the housekeeping decision.
+  What this entry got right: it is the engagement axis plus a write path. What it did not
+  anticipate is that the hard part is neither — it is the countable gates in
+  `core/initiative.ts`, because the one thing that must not be left to a prompt is whether now is
+  a reasonable time to interrupt somebody. An agent that decides to *start* a conversation when idle is item 4b's engagement axis
   plus a write path, and fusing it with housekeeping would repeat the `react`/`schedule` mistake:
   two unrelated questions in one call.
 
@@ -579,18 +589,66 @@ are unchanged.
 
 - ~~Priority~~ — being named forces a reply, so a direct address already goes to the right one.
 - ~~Deferral~~ — built as a jittered pause before working on any message nobody addressed.
-  History is read after the wait, so `react` sees an answer that arrived and declines on its own.
-  No sibling list, no shared state, and an agent is never distinguished from a person.
+  History is read after the wait, so `react` sees any answer that arrived and declines on its own.
+  No sibling list, no shared state, and an agent is never distinguished from a person. **Built and
+  measured ineffective** — see below. The mechanism is sound; the timescale is wrong by two orders
+  of magnitude, and no setting of it fixes that.
 
 **Decisions it carries**
 
 - ~~Shared state or channel-only~~ — channel-only, as expected. Deferral is a timing problem
-  rather than a lock, which is exactly what the jitter is for. Two instances can still both
-  speak; what has changed is that it is now unlikely rather than certain.
-- **Never measured with two instances actually in a room.** The delay and the crowd term are
-  covered by unit tests and by arithmetic, not by observation. Whether 4s is long enough for a
-  sibling to answer depends on how fast a session runs, which varies by an order of magnitude
-  between a direct reply and one that researches.
+  rather than a lock, which is exactly what the jitter is for. ~~Two instances can still both
+  speak; what has changed is that it is now unlikely rather than certain.~~ **Wrong, and the
+  measurement below says why**: the jitter separates when they *start*, not when they *finish*,
+  and only finishing is observable to a sibling.
+- ~~**Never measured with two instances actually in a room.**~~ **Measured, and the deferral does
+  not work.** The shared console (4a) made this observable without Slack. Both instances took the
+  jittered pause, both then ran `react` (~5s) and `schedule` (~8–10s), and both scheduled work —
+  neither ever saw the other. **4s is not long enough and could not be**: it is compared against a
+  *session*, and a session that schedules `reason` or `research` is two orders of magnitude longer,
+  not one. Nothing short of a delay longer than a full session would let a sibling answer first,
+  and that delay would be unacceptable when no sibling exists.
+
+  What actually prevented a double answer was **participation, not deferral** — and only
+  probabilistically. Both instances drew against `p = 0.600`, so per message: both speak 36%,
+  exactly one 48%, **neither 16%**. "Unlikely rather than certain" is not what 36% means, and the
+  16% is arguably worse — an addressed room where nobody answers.
+
+  **The 36% then happened.** A second run of the same question had both instances pass the draw
+  and both answer, 866s end to end, with near-identical replies — "Use SQLite unless you have a
+  specific reason not to" against "Start with SQLite unless you have a specific reason not to".
+  That is the failure this item exists to prevent, observed, and nothing in the current design
+  stops it.
+
+  **It is also slow in a way worth stating separately.** Both scheduled real work: `reason` at
+  274s and 280s, `research` at 429s, `respond` at 126s and 98s. A question one instance answers
+  alone in ~30s took the pair 14 minutes. The lease does not *add* that — ollama would have queued
+  them anyway — but the room's latency is additive in the number of agents who decide to work, and
+  participation damping is the only thing that reduces that number.
+
+  Incidental, and against a documented finding: **both instances picked `reason`**, where CLAUDE.md
+  records that `schedule` "reaches for `research` by default and effectively never picks `reason`
+  or `draft`". One observation on a deliberative question — a data point, not a conclusion.
+
+  **The run also found a real defect**: `waitedMs` was 0 on every step despite one instance being
+  visibly queued, because `toolLoop.ts` never took the lease. Fixed; see CLAUDE.md.
+
+- **The crowd term cannot see a silent sibling.** `countParticipants` counts identities that have
+  *spoken* in this instance's own history, so on the first message of a conversation a two-agent
+  room scores `participants = 2` → `crowd = 1.0`: no damping at all, at exactly the moment both
+  agents are deciding whether to answer the same question. It starts working only after a sibling
+  has spoken — i.e. after the double answer it exists to prevent. This is not an arithmetic slip;
+  it is the honest consequence of instances not knowing about each other, and the fix (if there is
+  one) has to come from something observable in the channel.
+
+- **The console room is not a faithful Slack room**, in the one respect this item cares about. A
+  console reply goes to stdout and nowhere else, so a sibling never sees it; on Slack it arrives as
+  an ordinary inbound message, since `shouldIgnore` filters only the bot's own user id. Every
+  stand-down path depends on that arrival — the deferral reads history after its wait, `update`
+  needs it in the inbox, `countParticipants` needs it in history. So the console measures
+  participation damping honestly and **cannot measure standing down at all**. Making a console
+  send fan out to the *other* attached instances would close that gap and is a small change; it is
+  not built, because it changes what agents react to and is a decision rather than a fix.
 - ~~Whether siblings read each other's knowledge stores~~ — **settled: they do not, and they do
   not know about each other at all.** There is no guarantee two instances even connect to the
   same workspace, so "sibling" is not a semantic relationship. Running several in one process is
@@ -714,6 +772,52 @@ previously had to infer from prose.
 marks the message with a configured emoji, and participation takes the continuous interest in
 place of a boolean. **13 pass · 0 unstable · 0 fail.** See CLAUDE.md.
 
+### Standing, and the second agent that never joins in
+
+Live, with two instances in one channel: the one that was not the previous speaker declines
+everything. Its stated reasons — "does not directly address or question the agent", "nor does it
+refer back to anything previously said by the agent" — are the situation fragments working
+exactly as written. They tested **invocation**; what was missing is **standing**, whether the
+message continues a matter the agent itself contributed to.
+
+So the assistant frame this item diagnosed survived one level below where it was fixed. Widening
+the verdict set and converting the voice did not reach the fragments, and `other_recent` ended by
+instructing the agent to stay out of subjects it had raised.
+
+**Fixed, and the fix was embeddings.** `core/standing.ts` measures whether a message continues a
+subject the agent has itself spoken on, and `situation.ts` routes on it. **react: 18 pass · 0
+unstable · 0 fail**, with the live case at 5/5.
+
+Getting there cost three prompt rewrites and a decoded `own_subject` boolean, all of which
+failed — the boolean scored 0/3 on phi4 against 3/3 on a 27B, and destabilised two clean cases
+besides. The lesson is the one this project keeps relearning: **a computable fact belongs in
+code**, and this one is a cosine over the agent's own recent turns on the `embed` role that had
+been resident and idle since the gatekeeper prefilter was designed. See CLAUDE.md.
+
+Note what this does *not* need: any awareness of siblings. Standing is a fact about the agent's
+own transcript, so the fix stays inside one instance, as item 4 requires.
+
+### The other half: an agent that judges the room by its own silence
+
+Also seen live, and the more compounding of the two. `reflect` opens by judging how the previous
+*session* landed — but a session that declined to reply **is** the previous session, so after a
+run of declines it reads a review of no answer, a summary with no answer in it, and no
+`request.md` at all. Everything it has is its own silence, and it starts assessing the incoming
+message for whether anyone remarked on that.
+
+`last_contribution` answers the question that was never asked: what the agent *actually said* here
+last, and how long ago. It reaches past the message window deliberately — an agent that has been
+quiet is exactly the case where its last contribution has already scrolled out of view, so a
+`readRecent` slice would answer "you have said nothing" precisely when the answer matters.
+
+The prompt also tells it not to read the conversation for remarks about its silence: people
+rarely comment on someone not speaking, and looking for it turns an ordinary exchange into one
+that appears to be about the agent.
+
+**reflect: 14 pass · 0 unstable · 0 fail.** The block has to be a *fallback* to get there —
+quoting the agent's own reply unconditionally primes `satisfied` and cost two clean cases. See
+CLAUDE.md.
+
 **Still open**
 
 - **A chosen reaction for `tangent`.** Fixed emoji only, for `acknowledge`. Choosing one costs a
@@ -799,14 +903,21 @@ sets it low; a conversation partner sets it high.
 
 ---
 
-## 4c. Personality insert
+## 4c. Personality insert — **the static half is built**
 
 A one-line self-description injected into prompts — "You are a curious researcher and engaged
 listener" — giving the agent a stance rather than leaving it an implied assistant. It pairs with
 the engagement axis above: the line says who it is, the number says how readily it acts on that.
 
-Stored on the instance, alongside `agent.name`, since it is the clearest example of what an
-instance config is for.
+**Built:** `[agent] personality` in config, rendered as `${agent_persona}` into the frame of
+every subjective step (`stance`, `research`, `reason`, `draft`, `plan`, `respond`). Stored on the
+instance alongside `agent.name`, since it is the clearest example of what an instance config is
+for. That settles the third decision below by measurement rather than argument: it goes in the
+prompts written in the agent's own voice, and nowhere else — an objective step has no stance to
+express.
+
+**Left:** letting it revise itself, below. That is the whole risk of the item and none of it has
+been built.
 
 **Letting `review` revise it** is the interesting part and the risky one. It is the same
 compounding shape as `reflect`'s recommendations and the impression summary: written by a model,
@@ -825,8 +936,9 @@ elsewhere here:
   across many. The latter's cadence — every N, not every session — is the better fit.
 - Whether the operator's original line is recoverable. An agent that has rewritten itself into
   something unhelpful should be resettable to what was configured.
-- Whether it belongs in every prompt or only the ones where stance changes the output. It costs
-  tokens in all of them and only earns them in `respond`, `react`, and `reason`.
+- ~~Whether it belongs in every prompt or only the ones where stance changes the output.~~
+  Settled: it goes in the six steps whose `voice` is `agent` and nowhere else. The voice field
+  makes the question answerable mechanically rather than case by case.
 
 ---
 

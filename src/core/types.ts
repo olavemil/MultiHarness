@@ -17,12 +17,28 @@ export interface Identity {
    * on its own schedule and needs a marker it can compare against.
    */
   synthesisedAt?: number;
+  /**
+   * When this person last said anything, anywhere.
+   *
+   * Only the step deciding whether to message somebody unprompted reads it, and
+   * it is the difference between writing to a colleague and writing to somebody
+   * who left three months ago.
+   */
+  lastSeenAt?: string;
 }
 
 /** A message as it arrives from an adapter. */
 export interface InboundMessage {
   id: string;
   channelId: string;
+  /**
+   * What the people in the channel call it, when the adapter knows.
+   *
+   * An id is not something to say out loud: `C07ABCXYZ` is what Slack calls a
+   * channel and `#deploys` is what the people in it call it. Only a step
+   * deciding *where* to speak needs it, and only that step should use it.
+   */
+  channelName?: string;
   identityId: string;
   /** Display name as the adapter knows it. */
   authorName: string;

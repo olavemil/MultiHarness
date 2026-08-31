@@ -71,6 +71,16 @@ export async function writeStepTrace(
     attempts: record.call?.attempts.length ?? 0,
     promptTokens: record.call?.promptTokens ?? 0,
     responseTokens: record.call?.responseTokens ?? 0,
+    /**
+     * Time this step spent queued for an exclusive model.
+     *
+     * The flattening below dropped it, so every trace read `waitedMs: 0` —
+     * which is not a measurement of no waiting, it is the absence of the field.
+     * That misreading sent one investigation to the tool loop (a real bug, but
+     * not this one) and hid whether the lease was working at all. `durationMs`
+     * includes this; subtract it for time actually spent on the weights.
+     */
+    waitedMs: record.call?.waitedMs ?? 0,
     // Characters, not tokens: ollama excludes thinking from eval_count, so
     // there is no honest token figure to report here.
     thinkingChars: record.call?.attempts.reduce((sum, a) => sum + a.thinking.length, 0) ?? 0,

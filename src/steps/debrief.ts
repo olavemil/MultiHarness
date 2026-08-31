@@ -44,12 +44,9 @@ export const debrief: ModelStep<Debrief> = {
   kind: "model",
   name: "debrief",
   defaultRole: "digest",
-  contextBlocks: [
-    "incoming_message",
-    "mid_session_messages",
-    "prior_step_output",
-    "session_summary",
-  ],
+  voice: "observer",
+  contextBlocks: ["mid_session_messages"],
+  appendix: ["incoming_message", "prior_step_output", "session_summary"],
   outputFile: "debrief.md",
   buildSchema: () => schema,
 

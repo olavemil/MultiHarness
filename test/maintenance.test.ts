@@ -17,6 +17,7 @@ import {
   testHistory,
   testIdentity,
   testMessage,
+  entryReplies,
 } from "./helpers/fixtures.ts";
 
 /**
@@ -29,12 +30,6 @@ const IMPRESSION = JSON.stringify({
   reading: "They ask narrow questions and act on short answers.",
   summary: "Wants the answer first; follows up when the reasoning matters.",
 });
-const REACTION = (respond: boolean) =>
-  JSON.stringify({
-    reason: respond ? "asked me directly" : "not for me",
-    verdict: respond ? "reply" : "for_someone_else",
-    interest: respond ? 0.9 : 0,
-  });
 const RESPONSE = JSON.stringify({ message: "Node 22 or newer." });
 const REVIEW = JSON.stringify({ assessment: "Fine.", quality: 4, recommendations: [] });
 
@@ -116,6 +111,30 @@ describe("maintenance sessions", () => {
     );
   });
 
+  it("passes only unsynthesised impressions to the impression step", async () => {
+    const { config, paths, server } = await harness([reply(IMPRESSION)]);
+    const db = openKnowledgeDb(paths.knowledge);
+    appendImpression(db, "operator", "operator", "old 1", { session: "s", step: "reflect" });
+    appendImpression(db, "operator", "operator", "old 2", { session: "s", step: "reflect" });
+    appendImpression(db, "operator", "operator", "new 1", { session: "s", step: "reflect" });
+    appendImpression(db, "operator", "operator", "new 2", { session: "s", step: "reflect" });
+    db.close();
+
+    await runSession({
+      config,
+      paths,
+      trigger: maintenanceTrigger("cli", "impressions pending"),
+      identity: { ...testIdentity(), synthesisedAt: 2 },
+      history: testHistory(),
+    });
+
+    const prompt = server.requests[0]?.body.messages?.[0]?.content ?? "";
+    expect(prompt).toContain("new 1");
+    expect(prompt).toContain("new 2");
+    expect(prompt).not.toContain("old 1");
+    expect(prompt).not.toContain("old 2");
+  });
+
   it("refuses to respond even when configured to", async () => {
     // Enforced in code, not by config discipline. Nobody is waiting on a
     // maintenance session, so speaking into the channel would be the agent
@@ -142,7 +161,7 @@ describe("maintenance sessions", () => {
     // would have the next real session asking how the last answer landed when
     // there was no last answer.
     const { config, paths } = await harness([
-      reply(REACTION(true)),
+      ...entryReplies(true).map(reply),
       reply(RESPONSE),
       reply(REVIEW),
       reply(IMPRESSION),

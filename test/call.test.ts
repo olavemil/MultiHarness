@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { callModel } from "../src/model/call.ts";
-import { OllamaError } from "../src/model/ollama.ts";
+import { ModelError } from "../src/model/transport.ts";
 import type { ResolvedRole } from "../src/model/roles.ts";
 import { mockOllama, reply, type MockReply } from "./helpers/mockOllama.ts";
 
@@ -16,6 +16,7 @@ const FALLBACK: Reaction = { respond: true, steps: ["respond"] };
 const role: ResolvedRole = {
   name: "fast",
   model: "test-model",
+  backend: "ollama",
   noTools: false, exclusive: false,
   options: { temperature: 0.2 },
 };
@@ -58,6 +59,31 @@ describe("callModel", () => {
     expect(server.requests[0]?.body.options).toEqual({ temperature: 0.2 });
   });
 
+  it("puts the schema's keys on the wire in declaration order", async () => {
+    // The invariant four steps depend on and nothing asserted. Constrained
+    // decoding emits keys in schema order, which is why `reason` is declared
+    // before the verdict it justifies — that reordering alone took react from
+    // 9/10 to 10/10 and separately fixed `adjust`, `restate` and `plan`.
+    //
+    // Two ways it could silently break: Zod could stop preserving declaration
+    // order in `toJSONSchema`, or `JSON.stringify` could reorder on the way
+    // out. Both are checked here, against the bytes actually sent.
+    const ordered = z.object({
+      reason: z.string(),
+      verdict: z.enum(["reply", "tangent"]),
+      interest: z.number(),
+    });
+    expect(Object.keys(z.toJSONSchema(ordered).properties as object)).toEqual([
+      "reason",
+      "verdict",
+      "interest",
+    ]);
+
+    const { server } = await call([reply('{"respond":false,"steps":[]}')]);
+    const sent = JSON.stringify(server.requests[0]?.body.format);
+    expect(sent.indexOf('"respond"')).toBeLessThan(sent.indexOf('"steps"'));
+  });
+
   it("retries once with the validation error fed back, then succeeds", async () => {
     const { result, server } = await call([
       reply('{"respond":"yes","steps":[]}'), // wrong type for respond
@@ -71,7 +97,7 @@ describe("callModel", () => {
 
     // The retry must carry the prior response and the specific error.
     const retryMessages = server.requests[1]?.body.messages ?? [];
-    expect(retryMessages.map((m) => m.role)).toEqual(["user", "agent", "user"]);
+    expect(retryMessages.map((m) => m.role)).toEqual(["user", "assistant", "user"]);
     expect(retryMessages.at(-1)?.content).toContain("respond");
   });
 
@@ -108,6 +134,6 @@ describe("callModel", () => {
   it("throws on transport failure instead of silently falling back", async () => {
     await expect(
       call([{ kind: "status", status: 500, body: "model not found" }]),
-    ).rejects.toBeInstanceOf(OllamaError);
+    ).rejects.toBeInstanceOf(ModelError);
   });
 });

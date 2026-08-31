@@ -2,11 +2,10 @@ import { detectMention } from "../src/core/mentions.ts";
 import type { ChannelMessage, CompletedStep, Identity, InboundMessage } from "../src/core/types.ts";
 import type { Config } from "../src/config/schema.ts";
 import { callModel } from "../src/model/call.ts";
-import { resolveStepModel } from "../src/model/roles.ts";
+import { hostFor, resolveStepModel } from "../src/model/roles.ts";
 import { prepareModelStep } from "../src/session/prepareStep.ts";
-import { resolveReplyTarget } from "../src/session/replyTarget.ts";
 import { getStep } from "../src/steps/registry.ts";
-import { wantsReply, type Reaction } from "../src/steps/react.ts";
+import { replyTargetKind, type Reading } from "../src/steps/read.ts";
 import type { ModelStep } from "../src/steps/types.ts";
 import type { PriorSession } from "../src/store/priorSession.ts";
 
@@ -56,6 +55,11 @@ export interface EvalCase {
   plan?: { goal: string; outstanding: string[]; artifacts?: string[] };
   /** For `compact`: the notes accumulated under one knowledge entry. */
   entry?: { topic: string; notes: { text: string; session?: string; step?: string }[] };
+  /**
+   * Which message the incoming one replies to, as `read` would have concluded.
+   * Routes `stance` to a situation fragment without spending a second call.
+   */
+  reply_target?: "agent" | "other" | "nothing";
   /** For `update`: the step in flight and what it was given to do. */
   step_name?: string;
   step_topic?: string;
@@ -214,9 +218,12 @@ export async function runStep(
   const started = Date.now();
   const mention = detectMention(blockInput.message.text, config.agent);
 
-  // Mirrors `session/run.ts`: being named settles whether to reply, so `react`
-  // is never consulted for it. Nothing else is short-circuited.
-  if (stepName === config.session.entry_step && mention !== undefined) {
+  // Mirrors `session/run.ts`: being named settles whether to reply, so neither
+  // entry step is consulted for it. Nothing else is short-circuited.
+  if (
+    (stepName === config.session.read_step || stepName === config.session.stance_step) &&
+    mention !== undefined
+  ) {
     return {
       answer: true,
       reason: `named ("${mention}")`,
@@ -227,19 +234,17 @@ export async function runStep(
     };
   }
 
-  // Also mirrored: the reply target informs a decision that being named has
-  // already settled, so it is not worth a call.
-  const replyTarget =
-    config.session.reply_target && stepName === config.session.entry_step && mention === undefined
-      ? await resolveReplyTarget(config, blockInput)
-      : undefined;
+  // `stance` routes on which message is being replied to, and `read` is what
+  // establishes that in a live session. A case may state it directly rather
+  // than spending a second call to rediscover it.
+  const replyTarget = testCase.reply_target;
 
   const prepared = await prepareModelStep({
     step: step as ModelStep<unknown>,
     config,
     blockInput,
     mention,
-    replyTarget: replyTarget?.kind,
+    replyTarget,
     variant: opts.variant,
     topic: testCase.entry?.topic ?? testCase.step_topic ?? "",
     budgetRemaining:
@@ -252,22 +257,22 @@ export async function runStep(
 
   const result = await callModel({
     label: step.name,
-    host: config.ollama.host,
+    host: hostFor(config, role),
     role,
     prompt: prepared.renderedPrompt,
-    schema: (step as ModelStep<unknown>).buildSchema(config),
+    schema: (step as ModelStep<unknown>).buildSchema(config, blockInput),
     fallback: () => (step as ModelStep<unknown>).fallback(config),
     timeoutMs: model.timeoutMs,
   });
 
   const value = result.value as Record<string, unknown>;
 
-  // `react` reports a verdict now, and `respond` is derived from it. Derived
+  // `read` decodes a window-local id; resolving it to a participant is what a
+  // live session routes on, so expose that rather than the raw id. Resolved
   // *here through the same function the session uses*, never reimplemented — an
-  // eval that computed its own version of this would be measuring its own copy
-  // of the rule, which is the drift this harness exists to avoid.
-  if (stepName === "react" && value["verdict"] !== undefined) {
-    value["respond"] = wantsReply(value as unknown as Reaction);
+  // eval that computed its own version would measure its own copy of the rule.
+  if (stepName === config.session.read_step && value["target"] !== undefined) {
+    value["reply_target"] = replyTargetKind(value as unknown as Reading, blockInput.history);
   }
 
   const field = testCase.field ?? DEFAULT_FIELD[stepName] ?? "";
@@ -281,7 +286,7 @@ export async function runStep(
     deterministic: false,
     detail:
       (prepared.situation?.id ?? prepared.fragmentId ?? prepared.prompt.variantId) +
-      (replyTarget ? ` <-${replyTarget.kind}` : ""),
+      (replyTarget ? ` <-${replyTarget}` : ""),
   };
 }
 

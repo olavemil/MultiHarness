@@ -1,4 +1,4 @@
-import { chmod, mkdir, readdir, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { Paths } from "./paths.ts";
 
@@ -58,9 +58,32 @@ export async function sealStep(
   session: SessionHandle,
   outputFile: string,
   content: string,
-): Promise<string> {
-  const target = path.join(session.dir, outputFile);
+): Promise<{ path: string; file: string }> {
+  // **A step can run twice in one session, and sealed output is 0444.** The
+  // second seal of the same name fails with EACCES — found the moment `outreach`
+  // wrote to two targets in one sitting, which is the first time any step has
+  // repeated. Suffixed rather than overwritten: sealed output is immutable, so
+  // the answer to a collision is a second file, never a replaced one.
+  let file = outputFile;
+  for (let n = 2; await exists(path.join(session.dir, file)); n++) {
+    const dot = outputFile.lastIndexOf(".");
+    file =
+      dot === -1
+        ? `${outputFile}_${n}`
+        : `${outputFile.slice(0, dot)}_${n}${outputFile.slice(dot)}`;
+  }
+
+  const target = path.join(session.dir, file);
   await writeFile(target, content.endsWith("\n") ? content : `${content}\n`, "utf8");
   await chmod(target, 0o444);
-  return target;
+  return { path: target, file };
 }
+
+const exists = async (target: string): Promise<boolean> => {
+  try {
+    await stat(target);
+    return true;
+  } catch {
+    return false;
+  }
+};

@@ -50,10 +50,28 @@ function parseArgs(argv: string[]) {
   };
 }
 
+/**
+ * An attempt only counts when the answer is the model's own.
+ *
+ * **Errors** carry the step's documented default, which would otherwise score as
+ * right on every case expecting that value — `react` falls back to
+ * `respond: false` on error, so a timeout used to pass every negative case.
+ *
+ * **Fallbacks are the same hazard with the opposite sign, and were missed.** A
+ * step that fails schema validation twice also returns its documented default,
+ * and `react`'s is `verdict: "reply"` — so a model that cannot hold the output
+ * shape passed every *positive* case for free. Found by swapping in a model that
+ * actually falls back: `gemma4:e4b-mlx` produced three, two of which landed on
+ * want-true cases and were counted as correct. phi4 and the GGUF build produce
+ * none, which is why this went unnoticed.
+ *
+ * The general rule, now stated twice in this file: **any new eval dimension must
+ * check that its failure value does not coincide with a valid answer.**
+ */
 function verdictFor(attempts: StepAttempt[], testCase: EvalCase): Verdict {
-  // An errored attempt is never correct. It carries a default answer, which
-  // would otherwise be scored as right on every case that expects that value.
-  const correct = attempts.filter((a) => !a.error && matches(testCase, a.answer)).length;
+  const correct = attempts.filter(
+    (a) => !a.error && !a.fellBack && matches(testCase, a.answer),
+  ).length;
   if (correct === attempts.length) return "PASS";
   return correct === 0 ? "FAIL" : "UNSTABLE";
 }
@@ -117,7 +135,9 @@ async function main(): Promise<void> {
     const verdict = verdictFor(attempts, testCase);
     verdicts.push(verdict);
 
-    const correct = attempts.filter((a) => !a.error && matches(testCase, a.answer)).length;
+    const correct = attempts.filter(
+      (a) => !a.error && !a.fellBack && matches(testCase, a.answer),
+    ).length;
     const avgMs = Math.round(attempts.reduce((n, a) => n + a.ms, 0) / attempts.length);
     totalMs += attempts.reduce((n, a) => n + a.ms, 0);
 

@@ -7,9 +7,20 @@ import { appendContent, createEntry, listEntries } from "../src/knowledge/store.
 import { embedding, mockOllama, reply, toolCall, type MockReply } from "./helpers/mockOllama.ts";
 import { testConfig } from "./helpers/fixtures.ts";
 
-const role = { name: "reasoning", model: "test-reasoning", noTools: false, exclusive: false, options: {} };
+const role = {
+  name: "reasoning",
+  model: "test-reasoning",
+  backend: "ollama" as const,
+  noTools: false,
+  exclusive: false,
+  options: {},
+};
 
-async function loop(replies: MockReply[], tools = resolveTools(["knowledge_search", "knowledge_read"])) {
+async function loop(
+  replies: MockReply[],
+  tools = resolveTools(["knowledge_search", "knowledge_read"]),
+  maxIterations?: number,
+) {
   const server = await mockOllama(replies);
   const config = await testConfig(server.host, "/tmp/unused");
   const db = openMemoryDb();
@@ -28,6 +39,7 @@ async function loop(replies: MockReply[], tools = resolveTools(["knowledge_searc
       tools,
       context: { config, knowledge: () => db, files: "/tmp", sessions: "/tmp", session: "s", step: "respond" },
       timeoutMs: 5_000,
+      ...(maxIterations !== undefined ? { maxIterations } : {}),
     });
     return { result, db, server, config };
   } finally {
@@ -93,6 +105,8 @@ describe("runToolLoop", () => {
   it("stops at the iteration cap rather than looping forever", async () => {
     const { result } = await loop(
       Array.from({ length: 8 }, () => toolCall("knowledge_search", { query: "docker" })),
+      resolveTools(["knowledge_search", "knowledge_read"]),
+      6,
     );
     expect(result.exhausted).toBe(true);
     expect(result.calls.length).toBeLessThanOrEqual(6);

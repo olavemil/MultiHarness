@@ -8,11 +8,15 @@ Not a chat wrapper: an incoming message triggers a **session**, which runs a con
 It is the source of truth for intent; this file is the source of truth for conventions;
 [roadmap.md](roadmap.md) is what is left to build and in what order.
 
-Status: the session loop is closed. `reflect → react → restate → schedule → [research | reason |
-draft] → respond → summarize → review` runs end to end over CLI and Slack adapters, leaving a
-full session directory, and each session reads the previous one in the same channel. The
-knowledge store, tools, identities, and the supervisor loop are built. Cross-session planning,
-scheduled triggers, and the web UI are not — see [roadmap.md](roadmap.md).
+Status: the session loop is closed. `reflect → read → stance → restate → schedule → [research |
+reason | draft | plan] → respond → summarize → review` runs end to end over CLI and Slack
+adapters, leaving a full session directory, and each session reads the previous one in the same
+channel. The knowledge store, tools, identities, cross-session planning, and the supervisor loop
+are built. Scheduled triggers and the web UI are not — see [roadmap.md](roadmap.md).
+
+**[session-flow.md](session-flow.md) is the shape of a session**: control flow, what output
+reaches what input, and which steps are objective and which subjective. Read it before touching
+a prompt or a context block.
 
 ## Editing prompts under a running daemon
 
@@ -112,7 +116,7 @@ Use these terms consistently in code, config, and docs. Don't invent synonyms.
   which is the universal anchor; the message is optional and absent on an idle run.
 - **maintenance session** — a session with no incoming message, run when a channel has gone
   quiet. The sleep phase. Never replies.
-- **step** — one unit of work in a session (`reflect`, `react`, `research`, `respond`, …).
+- **step** — one unit of work in a session (`reflect`, `read`, `stance`, `research`, `respond`, …).
   Steps have a prompt file, a context spec, a model role, a tool allowlist, and an output file.
 - **schedule** — choosing which steps run in *this* session. A `fast` call, sealed to
   `schedule.md`.
@@ -126,9 +130,13 @@ Use these terms consistently in code, config, and docs. Don't invent synonyms.
 - **model role** — `fast` / `reasoning` / `digest` / `embed`. Steps name roles; one table
   binds roles to concrete models.
 - **update** — the in-flight supervisor check that runs alongside a step. Distinct from
-  the session-entry `react` step; narrower job, own prompt and schema.
+  the session-entry pair; narrower job, own prompt and schema.
 - **adjust** — the join point after a step where an `update` verdict is applied.
 - **knowledge** — the long-lived K/V knowledge store. Survives sessions.
+- **initiative** — the agent starting a conversation nobody prompted. Distinct from
+  *interjecting*, which is the ordinary reply path deciding to answer an unaddressed message.
+- **curiosity** — an open question the agent recorded and has not closed. Cross-channel, and the
+  only thing that makes an idle agent do anything. Not "knowledge": it is the *absence* of it.
 - **agent files** — the agent's own sandbox filesystem. Survives sessions.
 - **session output** — per-session step artifacts. Immutable once sealed.
 
@@ -159,7 +167,9 @@ retry once with the validation error fed back, then fall back to a documented sa
 default. A step must never crash the session on a parse failure.
 
 **Mentions are matched in code, never judged by a model.** `core/mentions.ts` decides whether
-the agent was named; `react` is told the verdict as settled fact. Asking a small model "were you
+the agent was named; the entry steps are told that as settled fact. What being named settles is
+that the message will not be *ignored* — not what it asks, which is still read. Asking a small
+model "were you
 mentioned?" is a string match dressed as a judgement and it fails badly — a 3.8B model reads
 `@dana can you look at this` and concludes it was addressed directly. This leaves the prompt one
 genuinely hard question: whether an *unaddressed* message still wants an answer. When the agent
@@ -169,22 +179,28 @@ to decide and is sealed without a model call at all.
 **Situation routing is deterministic; prompt variants are random.** Two separate mechanisms that
 must not be confused. `core/situation.ts` classifies conversational position — `mentions_other`
 × distance from the agent's last message — and selects a fragment from `prompts/situations/`,
-injected as `${situation}`. That keeps one react prompt asking one *specific* question per
+injected as `${situation}`. That keeps one `stance` prompt asking one *specific* question per
 situation instead of six near-duplicate prompt files drifting apart. Fragments may themselves
 have `_1`/`_2` variants; the trace records `situation` and `situationVariantId` separately so
 you can tell which mechanism moved a result.
 
 **Prompt voice follows the model's job.** Steps doing substantial work on `reasoning`/`digest`
 — `respond`, `review`, `reflect` — are written in **second person**: they are the agent doing
-the work. Mechanical classification on `fast` — `react`, its `prompts/situations/` fragments,
-`reply_target` — is written in **neutral analyst voice**, referring to "the agent" in the
-third person and never addressing the model as a participant. These models are trained to read
+the work. Mechanical classification on `fast` — `read`, `restate`, `schedule` — is written in
+**neutral analyst voice**, referring to "the agent" in the third person and never addressing the
+model as a participant. `stance` is the exception that proves the rule: it runs on `fast` and is
+written in second person, because what it measures is not a classification of the transcript but
+the agent weighing its own knowledge. The `prompts/situations/` fragments went with it. These models are trained to read
 "you" as themselves-the-agent-being-asked, so second person in a classification prompt makes
 them conflate "is this aimed at you, the channel participant" with "are you being asked this
 question". Injected variables follow the same rule as the file they land in.
 
 Voice is a property of the whole fragment set, not one file: `${situation}` fragments are
-injected into `react`, so converting one without the others produces a mixed-voice prompt.
+injected into `stance`, so converting one without the others produces a mixed-voice prompt.
+
+**Voice is declared, not implied.** Every `ModelStep` carries `voice: "agent" | "observer"`, and
+it is load-bearing rather than descriptive — it selects the heading each context block is
+labelled with. See "Prompt composition" below.
 
 **Work being judged is presented as a third party's.** Distinct from the rule above, which is
 about who the model is addressed as; this is about who the *work* belongs to. It matters
@@ -195,16 +211,27 @@ wherever a step assesses output the agent itself produced:
 - "Has progress been made here?" — a critical reading, which is the only useful one.
 
 Present the session's output the way channel messages are presented: material to be examined,
-authored by someone else. `review` is currently written in second person about its own session
-and is the obvious candidate for this treatment — it needed an explicit instruction not to
-describe a reply that did not exist, which is exactly the failure this framing prevents. It has
-no eval suite yet, so that is a hypothesis, not a finding.
+authored by someone else. `review`, `reflect`, `debrief`, and `impression` are all `voice:
+"observer"` for this reason, and all four open by saying the work is somebody else's. `review`
+was the last holdout — it was second person about its own session, and it needed an explicit
+instruction not to describe a reply that did not exist, which is exactly the failure this framing
+prevents.
 
-**Every step declares its context.** Context assembly goes through one shared builder that
-resolves named blocks (`recent_messages`, `last_review`, `reflection`, `user_summary`, …)
-with explicit per-block truncation budgets. Do not hand-assemble context inside a step.
-Budgets exist for **answer quality** — local model attention degrades well before the
-nominal window — not to avoid OOM. Memory is not the binding constraint here.
+**Every step declares its context, in two lists.** Context assembly goes through one shared
+builder that resolves named blocks (`recent_messages`, `last_review`, `reflection`,
+`user_summary`, …) with explicit per-block truncation budgets. Do not hand-assemble context
+inside a step. Budgets exist for **answer quality** — local model attention degrades well before
+the nominal window — not to avoid OOM. Memory is not the binding constraint here.
+
+`contextBlocks` are inline and **mandatory**: the step names them as `${block}` in its own frame,
+and declaring one asserts the step can never be queued without it. `appendix` blocks are
+**optional**, rendered into `${context}` in the declared order and omitted entirely when absent.
+
+**Absence is absence.** A block with nothing to say resolves to `undefined` and contributes no
+heading, no placeholder, and no budget. Placeholder prose — `(no preparatory steps ran)`,
+`(nothing known about them yet)` — arrived under a heading, in the same markdown, indistinguishable
+from content, and a step handed a form with most fields marked not-applicable answers from the
+form.
 
 **Knowledge writes go through the gatekeeper.** No step writes knowledge entries directly.
 A write tool takes candidate text, an embedding prefilter pulls the nearest existing
@@ -222,6 +249,87 @@ prompts, and default config only.
 response, the parsed result, model id, prompt variant, timings, and token counts. This
 system is not debuggable without it.
 
+## Prompt composition: frame, then appendices
+
+Every prompt is three parts, and nothing else:
+
+```
+frame        a few lines. Who is being addressed, what the task is, and the two or three
+             mandatory parameters inline — ${agent_name}, ${agent_persona}, ${sender},
+             ${incoming_message}, ${topic}.
+${context}   optional appendices, in the step's declared priority order, each under a heading
+             chosen by the step's voice, and omitted entirely when empty.
+output       the schema contract.
+```
+
+**What this replaced was a fixed skeleton of prose with holes in it.** Every block rendered
+*something*, so a step with no draft, no plan, and no prior output still shipped three headings
+followed by `(no preparatory steps ran)` and `(nothing was said)`. The model was handed a form
+with most fields marked not-applicable and asked to write a reply from it.
+
+**The heading is the mechanism, not decoration.** A block carries one heading per voice, and the
+step's `voice` picks. The same `prior_step_output` is **"What you worked out earlier in this
+session"** to the step that wrote it and **"Working notes produced during the session"** to the
+step judging it. That heading is the only thing telling a 27B that the research summary in front
+of it is its own work and not something the sender wrote — which is the mechanism behind the
+artifacts this pass was chasing. Headings may reference `${sender}`.
+
+**Every subjective step says once, in a sentence, that the context is its own.** *"Everything
+below except the conversation itself is your own — your draft, your notes, what you know.
+${sender} has not seen any of it."* It goes **before** `${context}`, not after: the model should
+have the frame in hand before it reads the material, and a note trailing a wall of markdown is a
+note about text it has already misread.
+
+**Appendix order is priority order, by attention rather than by budget.** First is the block the
+step is most likely to be wrong without: `respond` leads with `draft`, `reason` with what
+research found, `restate` with a correction from `reflect`.
+
+**`draft` is its own block, and that was a real bug.** A draft is a written reply in the agent's
+voice. Arriving inside `prior_step_output` under "what earlier steps produced", directly beneath
+the sender's message and next to research findings, it was the single most confusable thing in
+the whole prompt: prose in the first person, unlabelled, adjacent to somebody else's prose in the
+first person.
+
+**A mandatory block that resolves to nothing is a hard error**, naming the block and saying it
+either belongs in the appendix or the step was queued without what it needs. That is the guard
+working: it immediately found a path where a hand-built maintenance trigger could queue
+`impression` with no impressions, which used to spend a digest call summarising an empty list and
+replace a real summary with an admission of ignorance. It is dropped from the queue now, exactly
+as `compact` already was.
+
+**Three steps have no mandatory block at all.** `reason`, `research`, and `plan` run in
+continuation sessions with no incoming message, so their whole instruction is `${topic}` and
+everything else is optional. Working that out is what the guard is for — the alternative is
+discovering it when a continuation session dies.
+
+### The agent's own messages are labelled like everybody else's
+
+`core/window.ts` used to render them as `you`, which forced `reply_target` to open by disclaiming
+its own input: *"its messages are marked `you`. Ignore that label — you are not that
+participant."* A prompt apologising for the harness's rendering is the harness's bug.
+
+It also made the transcript non-neutral, which matters most for the step that needs it least
+biased: `read` decides which participant a message is aimed at, and a transcript that has already
+singled one out as "you" has answered part of that before the model reads it. With two instances
+in a channel it was worse — one agent's turns read `you` and its sibling's read `nephele`, so the
+same conversation rendered differently depending on who was looking.
+
+`instance/run.ts` now writes `config.agent.name` as the author of the agent's own turns rather
+than the literal string `"agent"`, and `renderWindow` just prints the author. `fromAgent` still
+carries the fact for code that needs it. History written by an older build still says `agent`,
+which degrades to a participant with an odd name rather than to anything broken.
+
+### The persona
+
+`[agent] personality` in config, rendered inline as `${agent_persona}` into the frame of every
+subjective step: *"You are galatea, a terse and skeptical agent."* A phrase, not a paragraph — it
+sits inside a sentence and is paid for on every reasoning call in the session.
+
+Static, deliberately. The self-revising version is a cross-channel document the agent edits about
+itself, which makes it the second loop in the system whose mistakes do not expire; it wants the
+same guards impressions have — append-only revisions and a strong default of leaving it alone —
+rather than being bolted onto a config string. See roadmap 4c.
+
 ## Model roles
 
 Target host: Mac, 48 GB unified memory. Metal caps GPU-wired memory at ~75% above 36 GB,
@@ -229,14 +337,30 @@ so the real ceiling is **~36 GB**, not 48.
 
 | role | binding | resident | notes |
 |---|---|---|---|
-| `fast` | `phi4:latest` | 11 GB @ 8k | pinned. On the latency path — react, gatekeeper, `update`. |
+| `fast` | `phi4:latest` | 11 GB @ 8k | pinned. On the latency path — `read`, `stance`, gatekeeper, `update`. |
 | `reasoning` | `qwen3.6:27b` | 17 GB @ 16k | pinned. Primary in-step worker. |
 | `digest` | `qwen3.6:27b`, thinking off | shared | empty tool allowlist, enforced by the harness. Re-splitting to a dedicated model is a role-table change only. |
-| `embed` | `qwen3-embedding:0.6b` | <1 GB | pinned. Gatekeeper prefilter; unused so far. |
+| `embed` | `qwen3-embedding:0.6b` | 2.1 GB @ 2k | pinned. Gatekeeper prefilter and `standing`. |
 
 **Measured, not estimated:** 28 GB resident against a ~36 GB Metal ceiling. Resident size runs
 well above file size — phi4 is 9.1 GB on disk and 11 GB loaded, because KV cache is included.
 Raising `num_ctx` therefore costs real headroom.
+
+**`embed` is the cautionary case, and it was invisible until the role was used.** 639 MB on disk,
+and it loaded at its default 32768 context for **5.8 GB resident** — the figure in this table said
+"<1 GB", which was the file size. Nobody had checked, because until `core/standing.ts` the role
+was configured and never called. Three defects surfaced together the moment it ran:
+
+- **`keep_alive` was never sent.** `embed()` posted `{model, input}` only, so `[roles.embed]
+  keep_alive = -1` did nothing — config said pinned, `ollama ps` said four minutes from now, and
+  every quiet channel paid a cold load of the model on its next reply.
+- **`options` was never sent either**, so `num_ctx` could not be set at all.
+- **`AbortSignal.timeout` rather than `model/deadline.ts`**, the one failure that file exists to
+  prevent, on a call that is now in the reply path.
+
+Fixed, and measured after: **2048 context, 2.1 GB, pinned.** 3.7 GB back, on a machine where the
+third model would not otherwise fit. **A role that nothing calls is not configured, only
+described** — the numbers beside it are claims until something exercises them.
 
 `fast` is a judgement role, not a mechanical one. Measured on five addressed/not-addressed
 react cases: `phi3.5:3.8b` 2/5 at 0.7s (treats any @mention as itself — it is not reading),
@@ -251,6 +375,55 @@ cut a full session from ~77s to ~18s.
 
 **`keep_alive = -1` pins permanently.** Swapping models under a pinned role leaves the old one
 resident, and it will evict the 27B. `ollama stop <model>` after experimenting.
+
+### A second backend: oMLX
+
+`src/model/omlx.ts`, alongside `ollama.ts`, both implementing the same `chat()`/`embed()`
+contract against `src/model/transport.ts`'s shapes. `[roles.*] backend` picks which one a role's
+calls go through (`"ollama"`, the default, or `"omlx"`); `resolveRole` refuses an `"omlx"` role
+outright if `[omlx]` is not configured, the same fail-at-resolution treatment `PLACEHOLDER_MODEL`
+gets, so a backend nothing uses yet cannot block startup.
+
+**oMLX (github.com/jundot/omlx) is not ollama-compatible.** It exposes an OpenAI/Anthropic-style
+API — SSE streaming, `response_format` for structured output, `/v1/embeddings` — not ollama's
+NDJSON `/api/chat`. This is a distinct thing from the `-mlx`-tagged models measured earlier in
+this file under "MLX is worse on every axis": those ran *through ollama itself*, on ollama's own
+MLX runtime; oMLX is a separate server. The earlier finding does not transfer, and does not need
+to — it was traced to specific retuned builds losing schema adherence, not to the MLX platform
+itself, so it says nothing about how a differently-served Qwen3 build will hold constrained
+decoding here.
+
+**Three request-shape choices in `omlx.ts` are unverified against a live instance, and are
+flagged as such in the module comment rather than presented as settled:**
+
+- `format` → `response_format: {type: "json_schema", ...}`, OpenAI's Structured Outputs shape.
+  oMLX's docs describe JSON-schema-validated *tool calling* but do not explicitly confirm
+  schema-constrained decoding via `response_format`. This is the one assumption that most affects
+  whether the backend is usable at all — `callModel`'s whole retry/fallback design assumes
+  constrained decoding is reliable, and every finding in "Evaluating steps" above about field
+  order and schema adherence was measured against ollama's `format`, not this.
+- `think` → `chat_template_kwargs: {enable_thinking}`, the vLLM/SGLang convention for Qwen3's
+  hybrid thinking toggle over an OpenAI-compatible endpoint. Plausible specifically because the
+  model this was built for is a Qwen3 build; oMLX may use a different field.
+- Reasoning tokens → read from `delta.reasoning_content`, the vLLM/DeepSeek-API convention. If
+  oMLX streams reasoning under a different key, `thinking` comes back silently empty rather than
+  erroring.
+
+**Run `test/prompts.test.ts` and the eval runner against a role on this backend before trusting
+it past `fast`** — none of the three above have been measured, only implemented against
+documentation and a plausible convention.
+
+**`keep_alive` has no wire equivalent.** oMLX manages residency itself (TTL / LRU / manual
+load-unload) rather than per request, so a role on this backend that sets `keep_alive` is
+misconfigured in a way that would otherwise be invisible — `config/load.ts` warns about it at
+startup, the same shape `embed`'s silently-dropped `keep_alive` was before that got traced down.
+Fix residency in oMLX's own config, not the harness's.
+
+**Tool-call correlation needed a field nothing here had before.** OpenAI's wire format requires
+each tool result to carry the `tool_call_id` of the call it answers; ollama's protocol has no
+such id, matching by name and turn order instead. `ToolCall` gained an optional `id` — always
+absent from ollama, always present from oMLX — and `toolLoop.ts` threads it onto the outgoing
+tool-result message when present. Nothing about the ollama path changed shape.
 
 ## Supervisor loop
 
@@ -283,7 +456,7 @@ A step runs as an iterating tool loop. Alongside it:
 
 - `update` triggers on non-empty inbox, debounced, at most one in flight. It sees new
   messages plus a headline snapshot of the running step (step name + intent, as written by
-  the triggering `react`/`update`) — not partial output.
+  the triggering entry step or `update`) — not partial output.
 - Its verdict is one of `continue` / `adjust` / `abort` / `respond_now` / `defer_to_session`,
   judging **relevance** ("is this still the right step?"), not progress.
 - Verdicts are applied only at `adjust`, which joins step and update.
@@ -349,7 +522,42 @@ npm install
 npm run typecheck && npm test
 npm run dev            # every instance on this machine; Ctrl-D to exit
 npm run dev galatea    # just that one
+npm run daemon         # same, with no npm between the shell and the process
+npm run stop           # SIGTERM to whatever is holding the instance locks
 ```
+
+Or in a container, which is the same daemon with the models left outside:
+
+```
+UID=$(id -u) GID=$(id -g) docker compose up
+```
+
+**The models stay on the host, and on Apple silicon that is not a preference** —
+a Linux container cannot reach Metal, so ollama runs natively and is reached over
+the network. `~/.multiharness` is bind-mounted at `/data`, so the container sees
+the instances `npm run init` already created and writes sessions back where the
+host can read them. The endpoint comes from `/data/docker.toml`, a two-line
+`$MULTIHARNESS_CONFIG` override — the outermost config layer, which is exactly
+where a property of the *machine* belongs rather than in any agent's own config:
+
+```toml
+[ollama]
+host = "http://host.docker.internal:11434"
+```
+
+Four details that are each a bug if missed, and are all in `compose.yaml` with
+their reasons: `user: "${UID}:${GID}"` or sealed 0444 output lands root-owned and
+the documented "read the session directory" workflow stops working;
+`stop_grace_period: 15s` because `GRACE_MS` is 8s and Docker's default 10s leaves
+no room to exit after draining; `stdin_open: true` or an instance with Slack
+*disabled* hits EOF on a closed stdin and the daemon exits looking like a crash;
+and **not** `restart: unless-stopped`, because "No instance started" throws and an
+always-restart policy turns a missing token into a crash loop that reads like a
+daemon bug.
+
+Measured, not assumed: `node:sqlite` works over the bind mount (the build fails
+early if the base image lacks it), files come back owned by the host user, and a
+graceful stop clears the lock.
 
 ```
 npm run init           # create an instance; verifies Slack tokens
@@ -363,6 +571,20 @@ A full session with a reply runs ~18s; declining to reply runs ~11s.
 
 ## Evaluating steps
 
+> **The suite is stale, by decision.** It was retired as a gate during the prompt rewrite: it had
+> stopped serving its original purpose — keeping the system stable while it was built out, and
+> choosing between models — and had become slow and over-fitted to prompts that no longer exist.
+> `eval/runner.ts` still compiles and still drives any registered step; the **cases** under
+> `eval/cases/` were written against the old `react`, the old placeholder-prose prompts, and a
+> `reply_target` step that no longer exists. Every measurement recorded in this section is a
+> historical record of what was true when it was taken. **Do not read any of it as a current
+> baseline, and do not judge a change against it without re-writing the cases first.**
+>
+> What survived as a gate is `test/prompts.test.ts`, which renders every variant of every
+> registered step through the same `prepareModelStep` a session uses. That is cheap, it is exact,
+> and it catches the failure that actually bites: a template growing a `${block}` its step does
+> not declare.
+
 One runner drives any registered step (`eval/runner.ts`), using the same `prepareModelStep` a
 session does. A bespoke runner per step meant every new step arrived unmeasured until someone
 wrote one, and the three that existed had each drifted from the live path differently. A case
@@ -371,7 +593,7 @@ declares which output `field` to judge and how (`equals`, `length`, `empty`, `no
 dedicated runner because it is a write path with store state, not a pipeline step.
 
 ```bash
-npm run eval                                  # react, 5 runs per case
+npm run eval                                  # 5 runs per case
 npm run eval -- --step reflect --runs 3
 npm run eval -- --model qwen3:4b --think false
 npm run eval -- --case open-question-recent
@@ -471,12 +693,69 @@ naively made a timeout *pass* every negative case — `other-thread-absent` was 
 Any new eval dimension needs the same care: the failure value must not coincide with a valid
 answer.
 
+**The same hazard with the opposite sign sat beside it for months.** A *fallback* — two failed
+schema validations — also returns the documented default, and `react`'s is `verdict: "reply"`, so
+it passed every **positive** case for free. `verdictFor` discounted errors and not fallbacks.
+Invisible while every model tested produced zero of them; `gemma4:e4b-mlx` produces several per
+run, and rescoring took it from 14 pass · 3 unstable to **11 pass · 6 unstable**. Both are
+discounted now. **A guard written for one direction of a symmetric failure is half a guard.**
+
 **Measured, 3 runs per case, after the reorder:**
 
 | model | score | avg | resident |
 |---|---|---|---|
 | `phi4:latest` | 10/10 | ~2.7s | 11 GB |
 | `qwen3:4b` (think off) | 9/10, 1 flaky | ~1.1s | ~3 GB |
+
+**Re-measured on the current 18 cases, n=5, run sequentially with every other model stopped, and
+with `think` controlled:**
+
+| model | think | per case | score |
+|---|---|---|---|
+| `phi4:latest` | n/a — no thinking mode | **1.08s** | **18 pass · 0 unstable · 0 fail** |
+| `gemma4:e4b` | off | 1.73s | 17 pass · 0 unstable · 1 fail |
+| `gemma4:e4b` | on | 3.77s | 17 pass · 1 unstable · 0 fail |
+| `gemma4:e4b-mlx` | off | ~2.5s | 11 pass · 6 unstable · 1 fail |
+| `gemma4:e4b-mlx` | on | ~8.8s | 11 pass · 7 unstable · 0 fail |
+
+**`fast` stays on phi4**, but the margin is 1.6×, not the 3.5× the first measurement claimed.
+
+**That first measurement did not control for thinking, and this file already said to.** `--think`
+exists on the eval runner precisely because qwen3:4b needed it here, and it was not passed.
+Thinking is **2.18× of gemma4's wallclock** — the whole apparent gap. Outside benchmarks rating
+gemma4 the faster model were right, and the harness was measuring a thinking model against one
+with no thinking mode at all.
+
+**So `[roles.fast]` must set `think` explicitly.** Left unset, the field is omitted from the
+request and the behaviour is decided by the model, the build, the client, and the ollama version —
+`ollama run` and `/api/chat` disagree for the same MLX build. A role whose latency depends on four
+things outside the config cannot be profiled, and any shipped profile inherits the same problem.
+
+**gemma4's one loss is `open-question-recent-unrelated`**, the open-question gate in plain
+`none_recent` — the same seam three prompt revisions have broken on phi4. A specific weakness at
+a known-hard discrimination, not a general one.
+
+**MLX is worse on every axis and cannot hold the output shape.** It produces fallbacks in every
+run where phi4 and the GGUF build produce none — two failed schema validations, then the
+documented default. It also destabilises `reply_target`, the *other* `fast` call: resolving fewer
+targets routes more messages as "replies to nothing", so `situation.ts` picks a different fragment
+before `react` reads the question. **A weaker fast model does not merely answer worse; it changes
+which question gets asked.**
+
+**Three probes were too narrow today and each produced a confident wrong answer**: a suspected
+download confound (real overlap, not the cause — the clean re-run was 3% *faster*); "MLX ignores
+`think` over the API" (from a trivial prompt the model simply answered; on a real one it is 2×
+slower with thinking on); and the first latency comparison itself. **Isolate the measurement, do
+not check one confounder and call it isolated.**
+
+All four standing cases match across both models, as they must — that judgement is code now, and
+a model swap cannot reach it. **Every judgement moved out of the prompt is one fewer thing a
+profile can break**, which is the practical argument for doing it.
+
+**The `~2.7s` in the older table above is stale** — the same step measures ~0.5s per call today,
+`reply_target` included. Two runs a day apart cannot say why (ollama version, freed headroom from
+the `embed` fix, or the original figure taken under load), so it is recorded as unexplained
+rather than attributed. Re-measure the baseline before comparing anything against it.
 
 qwen3:4b is ~2.5× faster and ~8 GB smaller for one flaky case. Worth revisiting if residency
 gets tight — Qwen3 needs `think = false` here or it blows the react timeout mid-stream.
@@ -553,17 +832,19 @@ comparing any configuration change against these numbers.
 
 ## Reply-target routing
 
-`session/replyTarget.ts` asks a model which earlier message the incoming one replies to, and
-`situation.ts` routes on that instead of on distance between messages. Ids come from
-`core/window.ts` and are window-local (`m1`…`m12`), never real UUIDs; the schema is compiled
-from the ids actually present, so an invalid reference is undecodable.
+`core/situation.ts` routes on "which message is this replying to?" rather than on how many
+messages back the agent last spoke. That answer now comes from the `read` step's `target` field;
+`session/replyTarget.ts` is gone, folded in, so the routing costs no call of its own.
 
-**On, on evidence.** `late-reply-to-agent` — someone answering the agent after two other people
-have talked — scores **5/5 with it on and 3/5 with it off**, at n=5 each. Distance routes that
-to `none_recent`; the reply target routes it to `none_immediate`, which is what it actually is,
-and that pattern is common in a real channel. It costs a second `fast` call, taking react from
-~2.7s to ~5s. One case at n=5 is suggestive rather than conclusive — re-measure if latency
-starts to matter.
+Ids come from `core/window.ts` and are window-local (`m1`…`m12`), never real UUIDs: a small model
+copying a UUID accurately is a self-inflicted failure, and at ~20 tokens each they would eat the
+block's budget on identifiers. The schema is compiled from the ids actually present, so an
+invalid reference is undecodable, and it degrades to `nothing` on an empty window.
+
+**On, on evidence.** `late-reply-to-agent` — somebody answering the agent after two other people
+have talked — scored **5/5 with it on and 3/5 with it off**, at n=5 each. Distance routes that to
+`none_recent`; the reply target routes it to `none_immediate`, which is what it actually is, and
+that pattern is common in a real channel.
 
 Note when routing on it: `absent` means *the agent has not spoken here*, which is a fact about
 history, not about reply targets. Collapsing "replies to nothing" onto `absent` made
@@ -588,10 +869,10 @@ eval/live drift.
 `review` get both deliberately: the gap between the literal message and the restatement is the
 only thing that makes interpretation drift visible, and a step handed only the polished version
 cannot see that anything was inferred. `restate` is excluded from `prior_step_output` for the
-same reason `react` is — it is framing, not work product, and every step reading that block also
-declares `request`.
+same reason `read` and `stance` are — it is framing, not work product, and every step reading
+that block also declares `request`.
 
-**Queued after `react` decides to reply, and only with history.** That keeps it off the
+**Queued after the derived verdict says reply, and only with history.** That keeps it off the
 declining path, which is the common one, and a first message in a channel is already
 self-contained.
 
@@ -636,9 +917,35 @@ An invented correction is worse than an invented critique — the session's whol
 the question is built from it — so the prompt leads with "usually it was not misread", the
 fallback is empty, and three of the five cases assert emptiness.
 
-**reflect, n=3, 12 cases: 12 pass · 0 unstable · 0 fail**, ~10s. All five correction cases pass,
+**reflect, n=3, 14 cases: 14 pass · 0 unstable · 0 fail**, ~10s. All five correction cases pass,
 including `dissatisfied-but-understood` — the answer was too long, the question was understood,
 and the correction stays empty.
+
+### Judging the room by your own silence
+
+Seen live alongside the standing failure above, and the more compounding of the two. `reflect`
+asks how the previous *session* landed — but a session that declined to reply **is** the previous
+session, so after a run of declines it reads a review of no answer, a summary with no answer in
+it, and no `request.md` at all. Everything it has to go on is its own silence, and it starts
+assessing the incoming message for whether anyone remarked on that.
+
+`last_contribution` answers the question nothing was asking: what the agent *actually said* here
+last, and how long ago. `store/channelStore.ts` scans the whole history rather than tailing it,
+deliberately — an agent that has been quiet is exactly the case where its last contribution has
+already left the window, so a `readRecent` slice would answer "you have said nothing" precisely
+when the answer matters.
+
+**It is a fallback, and that is load-bearing.** Rendered unconditionally it quoted the agent's own
+reply immediately before asking whether that reply landed, which primes `satisfied`: `new-subject`
+and `prior-reflection-carried` both fell to 2/3, answering `satisfied` for an acknowledgement
+followed by an unrelated question, with the priming visible in the model's own reasoning. Quoting
+only where nothing else supplies it — the agent stayed quiet, and the exchange it last joined has
+moved out of reach — took the suite back to 14/14. **A block that duplicates what other blocks
+already carry is not free even when it is accurate.**
+
+The prompt also says not to read the conversation for remarks about the silence: people rarely
+comment on someone not speaking, and looking for it turns an ordinary exchange into one that
+appears to be about the agent.
 
 This is the first field here to measure clean on its first run, and it is not luck: the "lead
 with the affirmative, make it terminal, keep the empty answer easy" pattern was applied from the
@@ -719,41 +1026,189 @@ damping only bites once the agent is *already* talking; the crowd term bites fro
 
 Two participants gives `crowd = 1`, so a DM is unaffected and still needs no special case.
 
+**Being named still forces the probability and skips the draw** — a direct question lost to a
+dice roll is a broken agent. That is also why participation could not damp the mention loop, and
+why the fix had to happen in `deriveVerdict` instead: by the time the draw is reached, a named
+message has already been decided.
+
 **Off by default** (`[session.participation] enabled`). Turning it on makes the decision
 stochastic, which changes what `npm run eval` measures — run the suite with it disabled when
 judging a prompt change. Every factor, the probability, and the draw are written to
 `trace/participation.json`; a hidden RNG deciding whether the agent speaks would make "why
 didn't it answer me?" unanswerable.
 
-## What `react` returns
+## The entry pair: `read`, then `stance`
 
-Four outcomes rather than a boolean, plus `interest`.
+Two `fast` calls before anything else happens, answering two different questions. They replaced a
+single `react` step that decoded both at once, plus a separate `reply_target` call — so the call
+count on the latency path is unchanged.
 
-| verdict | meaning | what the harness does |
+**`read` is purely objective.** Which earlier message is this replying to, who is it aimed at,
+and what does it want back? It is written as an analyst outside the conversation and never
+addresses the model as the agent, which is now possible because `core/window.ts` stopped
+rendering the agent's own turns as `you`. It absorbed `reply_target` outright.
+
+**`stance` is purely subjective**, and it is the only step on the entry path written in the
+agent's own voice. One question: *have you got something worth saying here?* It gets the persona,
+what is known about the sender, and the situation fragment — which had been asking an
+agent-shaped question ("does this reach back to something the agent said?") in the third person,
+because it was wedged into an objective call.
+
+**The seam was visible in the old prompt.** Widening `react`'s verdict from a boolean to four
+outcomes gave the model escape hatches from the situation fragment's conclusion, and needed a
+patch sentence saying the fragment settles the reply and the outcomes only spell out how silence
+is spelled. That sentence existed because two questions shared one constrained decode.
+
+### The verdict is derived, never decoded
+
+`steps/verdict.ts`. The four outcomes are a function of facts each established separately, so a
+model no longer chooses between them.
+
+| verdict | derived from | what the harness does |
 |---|---|---|
-| `reply` | a written answer is wanted | `respond` runs |
-| `acknowledge` | addressed to the agent, wants nothing back | marks the message, no reply |
-| `for_someone_else` | aimed at another participant | nothing |
-| `tangent` | could have been answered, not worth it | nothing |
+| `reply` | `wants: answer`, **or** nothing asked and `interest >= min_interest` | `respond` runs, subject to the draw |
+| `acknowledge` | `wants: acknowledgement`, **or** named with nothing to add | marks the message, no reply |
+| `for_someone_else` | `wants: nothing`, `addressee: other`, not named | nothing |
+| `tangent` | `wants: nothing`, `addressee: room`, not named, or damped by the draw | nothing |
 
-**A boolean asked an agent's question.** "Was the agent addressed?" is the wrong question
-for a conversation partner: under it, somebody sharing a thought correctly produces silence, which
-is a real failure seen live. Four outcomes let the step say "this wants acknowledging" or "this is
-not mine" without collapsing both into "no".
+This follows the rule the rest of the harness runs on: mention detection is code because a model
+reads `@dana can you look at this` and concludes it was addressed; standing is code because three
+prompt revisions and a decoded boolean all failed at it. This was the last routing question on
+the entry path still answered by a prompt.
 
-**`respond` is derived, never decoded.** `wantsReply()` is the single definition, used by the
-session *and* by the eval runner — a harness computing its own copy of that rule would be
-measuring its own copy, which is the drift this suite exists to catch. The 13 existing cases keep
-asserting the same decision unchanged.
+**A boolean asked an assistant's question.** "Was the agent addressed?" produces silence when
+somebody shares a thought, which is a real failure seen live. The last three outcomes are how
+silence is spelled, and distinguishing them is what lets the harness mark a message rather than
+ignore it. **`interest > 0` is the load-bearing clause**: with nothing asked of anybody, it is
+the only thing separating staying out of somebody else's exchange from joining it.
 
-**The situation fragments are the authority, and that had to be said explicitly.** They are the
-tuned surface — the wording that took `bare-ack-immediate` from 1/5 to 5/5 — and they still ask a
-binary question. Widening the verdict set gave the model escape hatches from their conclusion:
-`open-question-recent` went to **0/3**, because an open question to the room reads as `tangent`
-just as well as `reply`. One added sentence — the situation settles whether a written answer is
-wanted, the four outcomes only spell out *how* silence is spelled — took it back to 3/3.
+**Both entry steps run even when the agent is named**, which costs two `fast` calls on a path
+that used to be free. They were skipped, and that is what produced the mention loop below.
 
-**Measured after that: 13 pass · 0 unstable · 0 fail.**
+**Both fallbacks lean toward answering.** `read` falls back to `wants: answer` with no reply
+target: a parse failure is a harness problem, and going quiet over one looks exactly like being
+ignored to the person waiting. It still faces the draw. `stance` falls back to `0.5`, the
+midpoint, which neither silences the agent nor makes it eager.
+
+**A provisional verdict is derived the moment `read` seals**, from the reading alone with a
+neutral stance. It matters in exactly one case — the budget running out *between* the two entry
+steps — but that is the case where somebody is definitely waiting, and without it a session that
+had already established an answer was wanted would end owing nothing. Derived through the same
+function rather than by re-asking "did the reading want an answer?", because a second copy of
+that rule is how the two drift.
+
+### The mention loop, and why being named no longer forces a reply
+
+Seen live with two instances in one channel. Each named the other in messages that asked nothing
+— `@nephele good point` — and each was compelled to answer, and each answer named the other
+again. It ran until somebody stopped it.
+
+**Every damping mechanism in the system was disabled by exactly the condition causing the loop.**
+`responseProbability` returns a forced 1.0 for a named message and takes no draw, so presence
+damping, crowd damping, and interest could not bite. `read` and `stance` were both skipped, so
+nothing knew what the message asked, and `interest` was fabricated as 1 — the honest answer was
+0, and `reflect` said so afterwards, one exchange too late to matter.
+
+Three changes, and they are three different failures:
+
+- **The entry pair runs unconditionally.** Being named settles that the message is not *ignored*.
+  It never settled what the message asks, and skipping the step that answers that was the root
+  error. Two `fast` calls on the addressed path, ~2s, which is what the fix costs.
+- **A mention derives to `acknowledge` rather than `reply`** when nothing was asked and there is
+  nothing to add. The message is still answered in the sense that matters — it gets marked, so
+  nobody is ignored — but nothing enters the channel, so nothing names anybody, so nothing is
+  compelled to answer back.
+- **A low-interest reply may not name anybody** (`core/mentionPolicy.ts`). The other end of the
+  same loop: a reply that names somebody *is* a reply that forces a reply.
+
+**A question is answered whatever `interest` says**, and that gate sits above the interest test in
+`deriveVerdict` for a reason. Letting a low score silence a direct question would reintroduce the
+precise failure mention detection exists to prevent — somebody asks the agent something and gets
+a thumbs-up. There is a test asserting that a named message is never both unanswered and unmarked.
+
+**The mention policy is guidance, not enforcement, and that is deliberate.** Stripping names out
+of a finished reply cannot be done safely: `detectMention` matches the bare name as well as the
+`@handle`, so removing the mention means removing the word, and a sentence with a word cut out of
+it is worse than an unwanted notification.
+
+**`min_interest` is 0.3 and is a guess, not a measurement.** It is the one number here that wants
+watching: too high and the agent acknowledges things it should have answered, too low and the
+loop comes back. `[session] min_interest = 0` restores the old behaviour exactly.
+
+### Standing in a conversation, and the one thing phi4 cannot read
+
+Seen live: two instances in a channel, and the second declines everything it was not the previous
+speaker in. Its own reasons name the cause — *"does not directly address or question the agent"*,
+*"nor does it refer back to anything previously said by the agent"*. Both are the prompt working
+as written. `none_recent` tested **back-reference** and `other_recent` ended with, verbatim:
+
+> Two other people picking up a subject the agent once raised is a conversation it started, not
+> one it is owed a place in.
+
+That is the assistant frame surviving one level below where 4b fixed it. The verdict set was
+widened and the voice converted; the fragments still asked whether the agent had been *invoked*
+rather than whether it had **standing** — whether the message carries on a matter the agent
+itself contributed to.
+
+**Half of it is fixed and measured.** `none_recent` now asks the standing question:
+`own-topic-open-remark` **1/5 → 5/5**, with `open-question-recent` and a new negative guard both
+holding at 5/5.
+
+**The other half is a capability limit.** A boolean `own_subject`, decoded before the verdict so
+the model could not skip the question, scored **0/3 on phi4 and 3/3 on `digest`** for the same
+case. phi4 does not see that a question put to another participant continues a claim the agent
+made two messages earlier. Different from `restate`'s ambiguity failure, which survived the larger
+model — here the larger model simply answers it, at ~82s against ~2.7s on the entry step of every
+message. Not shippable as a role change.
+
+**`own_subject` was then removed, because it cost more than it bought.** It did not fix the case
+it was added for, *and* it destabilised two that were clean — at n=5, `open-question-recent`
+2/5 and `own-topic-open-remark` 3/5 with the field, **5/5 and 5/5 without it, same fragments**. A
+fifth decoded field on phi4 at 8k is not free, which is the same finding `restate` produced when
+it grew a fifth context block.
+
+**That measurement nearly went the other way, and the reason is worth keeping.** The field looked
+fine on targeted `--case` runs at n=3 and only showed its cost on the full suite at n=5 — the
+failure this file already warns about under "never judge a prompt change from a single live run",
+reached by a different route: a *narrow* run is as misleading as a short one, because the case
+that regressed was not the case being iterated on. Run the suite, not the case.
+
+### What fixed it: standing, measured by embeddings and used to route
+
+`core/standing.ts`, `[session.standing]`, and two new fragments. **18 pass · 0 unstable · 0
+fail**, with the live case at 5/5.
+
+**The question is settled in code, then stated to the prompt as fact** — the same treatment
+mention detection gets, and for the same reason: three prompt rewrites and a decoded field all
+failed at it, and the fact is computable. One batched `/api/embed` call, cosine against the
+agent's own recent turns, on the `embed` role that had been resident and unused since the
+gatekeeper prefilter was designed.
+
+**The threshold is calibrated against the suite, not chosen.** Cases needing "yes" score 0.419
+and 0.480; cases needing "no", 0.356 and 0.359. Hence 0.4 — a 0.06 margin on four points, which
+is thin, and `config/default.toml` says so. The first guess of 0.6 marked nothing at all:
+absolute cosine on short messages clusters far below 1, so the usable band is model-specific and
+has to be re-measured if `embed` is ever swapped.
+
+**Absent is not "unrelated".** A failed embed call leaves the prompt saying nothing about
+standing rather than asserting there is none — otherwise one unreachable model silences the agent
+everywhere, and the silence reads as a decision it made.
+
+**It routes; it is not another paragraph.** Fed to the existing fragments as a stated fact, it
+took `open-question-recent` to 3/5 — the third time that case has been collateral from a test
+appended after a terminal gate. phi4 at 8k cannot hold "the first gate is final" when a second
+test follows it. As a third routing axis it costs two short fragments, `none_recent_own` and
+`other_recent_own`, each asking one question, and every previously tuned fragment goes back to
+its measured wording. That is what `core/situation.ts` is *for*.
+
+Only the `recent` positions take the axis: `absent` means the agent has no subject here to
+continue, and `immediate` is already engaged.
+
+**Routing silently took coverage away, which is the trap in this design.** `open-question-recent`
+now routes to `none_recent_own`, so nothing was exercising the open-question gate in plain
+`none_recent` any more — the gate three separate revisions have broken. A new case,
+`open-question-recent-unrelated`, restores it at 5/5. **Adding a routing axis moves cases off the
+fragments they were written to test; check what each fragment still covers.**
 
 **`acknowledge` is not gated on participation.** An emoji is not a message, it does not crowd a
 channel, and damping it would leave the person with nothing at all — the outcome the verdict
@@ -771,14 +1226,20 @@ arrived as `true`.
 Slack adapter. Someone marking a reply is **the most direct evidence `reflect` ever gets** about
 how an answer landed — everything else it reads is prose it has to interpret.
 
-**Recorded, never queued.** A reaction is a signal, not a request. Running a session for a 👍
-would spend a whole pipeline concluding that nothing was asked, so it is appended and read by
-`reflect` at the start of the next real exchange.
+**Never queued on the reply path; queued as maintenance work.** A reaction is a signal, not a
+request, and running a *reply* session for a 👍 would spend a whole pipeline concluding that
+nothing was asked. But it is the only signal that arrives with nobody speaking, so leaving it
+until the next real exchange lost it entirely when the reaction was the last word. It now makes
+the channel due for maintenance, where nobody is waiting — see "A reaction can now start a session
+of its own".
 
 **Kept out of `history.jsonl`**, in `reactions.jsonl` beside it. A reaction is not a turn in the
 conversation: folding it in would have every step reading `recent_messages` treat an emoji as
 something somebody said, and would push real messages out of the window for no gain. Only
 `reflect` declares the block.
+
+**Only ones not yet reflected on.** `readNewReactions` filters against a per-channel watermark;
+without it the same 👍 was presented as new at every session for ever.
 
 **Only reactions on the agent's own messages.** Slack reports `item_user`, and one between two
 other people is a conversation the agent is not part of — treating it as evidence about its own
@@ -793,6 +1254,82 @@ fires — visible under `MULTIHARNESS_DEBUG=1`, and silent otherwise.
 
 The prompt frames it as a signal rather than a verdict: a 👍 says the reply was received and
 welcome, not that it was right, and a single emoji carries far less than a sentence would.
+
+## What the agent marks a message with
+
+`stance` and `schedule` each decode a `reaction`; `[session.acknowledgements]` suggests some and
+`acknowledge_emoji` / `working_emoji` are the fallbacks. Two different gestures:
+
+| when | chosen by | what it says |
+|---|---|---|
+| the verdict is `acknowledge` | `stance` | *this is my whole answer* |
+| `schedule` chose any step | `schedule` | *I have gone to look this up; back shortly* |
+
+**Any emoji name, not a list.** The vocabulary was compiled into `stance`'s schema, which is safe
+and is exactly why it never read like a person reacting. `core/emoji.ts` checks only the *shape*
+of the name — strips colons, lowercases, refuses a sentence or a literal emoji character. Whether
+it **exists** is Slack's answer to give, and it gives it as `invalid_name`, caught by the adapter.
+A bad guess costs a missing reaction and a log line. That is the intended trade: an agent that can
+pick the wrong emoji is an agent that can pick the right one.
+
+**No fixed emoji per outcome, and a reversal of a documented decision.** A fixed one was chosen
+because it is predictable and never embarrassing. Since a bare mention derives to `acknowledge`
+rather than forcing a reply, thumbs-up had become the single answer to thanks, to jokes, to good
+news and to being agreed with — four things wearing one face.
+
+**Neither costs an extra call.** Both ride on steps that already run at exactly the right moment,
+which is why they are fields rather than steps. `reaction` decodes **last** in both schemas:
+`stance`'s `interest` gates the verdict, the draw, and the mention policy, and `schedule`'s
+`steps` is the weakest judgement in the system. A new field goes where it cannot perturb the one
+that matters. Whether a third and fourth field cost anything at all is **unmeasured** — the suite
+that would have answered it is retired.
+
+**Marking before slow work is the point of the second one.** Choosing any step means `research` or
+`reason` runs on the large weights for tens of seconds to minutes, and the person saw nothing in
+that window — indistinguishable, from outside, from having been ignored. It is sent from `run.ts`
+the moment `schedule` seals, not queued as a step: it is one API call and nobody should wait on
+it. Skipped when no steps were chosen, because a reply arriving seconds later needs no warning.
+
+**The meanings live in config, not the prompt**, departing from `selectable_steps` — whose list is
+config and whose descriptions are prose in `schedule_1.md`. Deliberate: the list is a property of
+a *workspace*, since custom emoji differ per Slack, so a meaning that did not travel with its
+emoji would be wrong the moment anybody edited the list.
+
+**The CLI prints it, which it did not before.** `adapters/cli.ts` had no `react` at all, so an
+acknowledgement on the terminal was silence — precisely the failure the acknowledgement exists to
+prevent, still present on one adapter, and unnoticed while `acknowledge` was rare.
+
+### A reaction can now start a session of its own
+
+`readNewReactions`, `reactions_seen.json`, and `reflect` in `[session.maintenance] steps`.
+
+**A reaction was the one signal that arrived without anybody speaking, and nothing read it.** It
+was recorded and picked up at the start of the next real exchange — which never comes if the
+reaction *was* the last word. A channel that falls silent after a 👎 is precisely where knowing
+about it matters, and that was the case guaranteed to miss it.
+
+**The watermark is what makes it schedulable, and it was a latent bug on its own.**
+`readReactions` returns everything still standing, so a 👍 from three exchanges ago was handed to
+`reflect` at every later session looking exactly as fresh as one from a minute ago — and this step's
+whole job is judging what the *latest* signal says. Without a marker the "is there a new reaction?"
+condition would also never stop being true. Same shape and same reason as `Identity.synthesisedAt`.
+
+**It is stamped with the newest reaction actually handed over, never with the wall clock.** A
+reaction arriving *while* the session runs is older than "now" and would be filtered out for ever
+having never been in front of anything. And it only moves when `reflect` actually ran: advancing
+after a session that never looked discards the signal unread, which is the same failure with the
+sign flipped.
+
+**What it durably leaves is the impression**, appended to the identity and read across channels.
+A maintenance session never becomes the prior session, so the reflection's `recommendations` reach
+nothing — which is correct here, because they are advice for answering and nobody asked anything.
+This run exists to notice, not to act.
+
+**`reflect` therefore has no mandatory context block at all.** It required `incoming_message`,
+which was true of every session that ran it until now. Its prompt handles both: a new message is
+the usual signal, and a reaction alone is the other — and where the reaction is the whole signal,
+the usual counsel that most messages carry no verdict does not apply, because a reaction was a
+deliberate act aimed at a specific message.
 
 ## The reflection loop
 
@@ -950,23 +1487,33 @@ a prompt, which makes it a prompt-injection surface, and it wants deciding on pu
 
 ## Steps
 
-| step | role | tools | when |
-|---|---|---|---|
-| `reflect` | digest | — | second session onward in a channel |
-| `react` | fast | — | unless the agent was named |
-| `restate` | fast | — | replying, and the channel has history |
-| `schedule` | fast | — | replying, and `selectable_steps` is non-empty |
-| `research` | reasoning | knowledge search/read/write | chosen by `schedule` |
-| `reason` | reasoning | none | chosen by `schedule` |
-| `draft` | reasoning | none | chosen by `schedule` |
-| `respond` | reasoning | — | replying |
-| `summarize` | — | — | always |
-| `review` | digest | — | always |
-| `debrief` | digest | — | only when messages arrived mid-session |
-| `impression` | digest | — | every N impressions, in a maintenance session |
-| `plan` | reasoning | none | chosen by `schedule`, and every continuation iteration |
+| step | role | voice | tools | when |
+|---|---|---|---|---|
+| `reflect` | digest | observer | — | second session onward in a channel |
+| `read` | fast | observer | — | always, on a message |
+| `stance` | fast | **agent** | — | always |
+| `restate` | fast | observer | — | replying, and the channel has history |
+| `schedule` | fast | observer | — | replying, and `selectable_steps` is non-empty |
+| `research` | reasoning | **agent** | knowledge, files, sessions, web | chosen by `schedule` |
+| `reason` | reasoning | **agent** | knowledge, files (rw), sessions | chosen by `schedule` |
+| `draft` | reasoning | **agent** | knowledge, files (ro), sessions | chosen by `schedule` |
+| `respond` | reasoning | **agent** | knowledge (ro) | replying |
+| `summarize` | — | — | — | always |
+| `review` | digest | observer | — | always, except a maintenance session |
+| `debrief` | digest | observer | — | only when messages arrived mid-session |
+| `impression` | digest | observer | — | every N impressions, in a maintenance session |
+| `compact` | digest | observer | — | in a maintenance session, one entry at a time |
+| `prune` | digest | observer | — | in a maintenance session, once open questions accumulate |
+| `ponder` | reasoning | **agent** | knowledge, files (rw), sessions | in a maintenance session, alongside other work |
+| `initiate` | reasoning | **agent** | knowledge, files (ro), sessions | last in a maintenance session, when a channel is eligible |
+| `plan` | reasoning | **agent** | knowledge, files (rw), sessions | chosen by `schedule`, and every continuation iteration |
 
-`schedule` picks from them. `draft` writes a first pass with notes for `respond` to sharpen.
+`schedule` picks from them. `draft` writes a first pass with notes for `respond` to sharpen, and
+`respond` receives it as its own first appendix rather than buried in `prior_step_output`.
+
+**Six steps are the agent; the rest observe it.** That split is the axis the prompts are written
+on — see "Prompt composition" above, and [session-flow.md](session-flow.md) for the reasoning per
+step.
 
 ### Tool access is the difference between the working steps
 
@@ -1071,6 +1618,7 @@ be merged into anything else here.
 | `debrief` | how an interruption was handled | per session | only when the session was interrupted |
 | `review` | how well the reply served the person | per session | read by the next `reflect` |
 | impressions → `impression` | the other person | **cross-channel**, per identity | permanent, revised every N |
+| curiosity → `prune` | what the agent does not know | **cross-channel** | until closed, and closing is deliberate |
 | personality insert (4c, unbuilt) | the agent itself | **cross-channel** | permanent, rarely revised |
 
 **The bottom two are the only cross-channel loops, and that is the interesting property.**
@@ -1307,6 +1855,282 @@ being retained is the real safeguard rather than the eval.
 maintenance session where nobody is waiting — which is exactly the argument for putting it there.
 Real entries will carry more notes than these three-note cases, so expect worse.
 
+## Curiosity — the only thing that makes the agent want anything
+
+`knowledge/curiosity.ts`, `session/harvest.ts`, the `prune` step, and
+`[session.curiosity]`. What the agent noticed it does not know, accumulated across every channel,
+and what it does about it when nobody is talking to it.
+
+**Everything else in the harness is reactive.** A message arrives, a session runs, it stops.
+Knowledge and impressions persist, but neither *drives* anything — both are read once something
+else has already started. Nothing made the agent begin a plan or write a file on its own account,
+because nothing gave it anything it wanted.
+
+**The raw material already existed and was thrown away.** `research` reports `gaps` — "anything
+you could not establish that would have changed the answer" — `reason` reports `uncertainties`,
+and `debrief` reports what a session was asked and never answered. Every one was sealed into step
+output, read by `respond` in the same session, and never seen again. The agent noticed what it did
+not know, said so plainly, and forgot within seconds.
+
+### Capture is a copy, never a judgement
+
+`session/harvest.ts` runs when a step seals and copies those fields out. No model call, no
+decision — the step was already asked exactly the right question. Asking a step "what are you
+curious about?" would be the self-assessment shape this project has been bitten by every time,
+the same as "have you made progress?".
+
+**The filtering happens at selection, not at capture.** Which open question is worth idle time is
+a far better question than which was worth writing down, and recurrence answers it without
+anybody being asked.
+
+### Recurrence is countable because merging is
+
+Stored in the knowledge database under a `curiosity` namespace, which buys append-only content
+with provenance and — the part that matters — the embedding prefilter. A new question within
+`merge_threshold` of an existing one is appended to it rather than recorded again, so *recurrence
+is simply the block count*. "What version the vendor ships" and "which release the vendor is on"
+are one question asked twice, and kept apart they would be two that never look pressing.
+
+The threshold shares `[session.standing]`'s hazard: absolute cosine on short strings clusters far
+below 1, so the band is specific to the embedding model. **0.6 is a starting point and is
+unmeasured.**
+
+**A pursuit block does not count as a recurrence, and that was nearly a real bug.** Recording that
+the agent went and worked on something appends a block, so without excluding it by provenance
+step, pursuing a question would make it look *more* pressing — and an idle agent would research
+the same thing every quiet period, each pass making the next likelier. Exactly the shape that
+halved `compact`'s threshold on every pass after the first, and fixed the same way.
+
+### What an idle agent does with one
+
+`pendingMaintenance` returns a pursuit **only when there is nothing to tidy**. Housekeeping is
+bounded and cheap; pursuing runs `research` on the large weights and may start a plan. It also
+reads the right way round — the agent puts its affairs in order, and when there is nothing left to
+order it goes and works on what has been bothering it.
+
+| condition | what happens |
+|---|---|
+| `resurfaced >= pursue_after` (2) | a maintenance session runs `research` with the question as its topic |
+| `resurfaced >= escalate_after` (4) | `plan` runs too, and continuation carries the work from there |
+
+Both gates are counts, not judgements. **Escalation is deliberately well above pursuit**: a plan
+is a commitment later sessions act on unprompted, so something has to keep coming back *and*
+survive being looked into before it earns one.
+
+**Pursuit is scoped to the channel the question came from**, because plans are per-channel and
+pursuing something in whichever room happened to fall quiet first would file the plan in the wrong
+place. The *store* stays cross-channel, which is what makes the count meaningful.
+
+This is what finally writes to `files/` and starts a plan unprompted: `research` and `plan` already
+have the tools, and a maintenance session already accepts any step with a topic. No new
+machinery — the drive was the missing part, not the capability.
+
+### Closing is the guard the whole thing rests on
+
+`prune`, a `digest` step in a maintenance session, reads the open questions and says which are
+finished with. **The harness applies the verdicts; no step closes one on its own authority** —
+the same arrangement as knowledge writes going through the gatekeeper and plans being written only
+by the plan step.
+
+It is the half that is easy to skip and the half that matters. Capture is automatic and
+unjudged, which is what makes it cheap and honest and also what fills the store with loose ends. A
+question nothing can close is a standing instruction the agent cannot escape, read into every idle
+period for ever — precisely the lesson `plan` paid for with `fulfilled` and `abandoned`.
+
+The prompt asks it to close on four grounds — answered, not answerable by looking, never a real
+question, overtaken — and leans hard the other way on the rest: *"A question that keeps coming
+back is the strongest thing in this list, not the weakest,"* and closing everything leaves the
+agent with nothing it wants. The fallback closes nothing.
+
+**Closing is not deleting.** The entry and every block stay on disk with the reason, exactly as a
+compaction supersedes rather than replaces. A question asked again after being closed gets a *new*
+entry rather than reopening the old one: reopening would undo a deliberate close, which is the one
+thing a store with no delete path cannot recover from.
+
+**Unmeasured, all of it.** Four numbers here are guesses — `merge_threshold`, `pursue_after`,
+`escalate_after`, and the `max_open` that gates `prune`. The failure to watch for is a store that
+grows faster than `prune` empties it, at which point the agent pursues noise; the opposite failure
+is a `prune` that closes everything and leaves it inert again.
+
+## Background thinking
+
+`steps/ponder.ts`, `store/thinkingStore.ts`, and the `background_thinking` block. The agent
+taking stock in its own time, with tools to actually look.
+
+**Distinct from `reason`, and not because of the model.** `reason` is handed a topic by
+`schedule` and works a question somebody asked; its output is sealed and read by `respond` minutes
+later. `ponder` has no assigned topic, runs only in idle time, and writes to a document that
+outlives every session — so it is the one step whose subject is the agent's own situation rather
+than anybody's question.
+
+**Cross-channel, unlike a plan.** A plan is a commitment in one room; this is the view across all
+of them. Filing it per channel would fragment the only thing that makes it worth having.
+
+**Append-only revisions, latest read.** `thinking_0.md`, `thinking_1.md`, … with `thinking.json`
+pointing at the current one — the same arrangement as plans, for the same reason: a document a
+model rewrites about itself, read by later sessions and checked against nothing. `carry_forward`
+*replaces* rather than appends, because what later steps read has to be the current view and not
+an accreting pile; the revisions on disk are what stops that losing anything.
+
+**No closing, deliberately.** A plan needs `fulfilled`/`abandoned` because an open one *directs*
+work. This directs nothing, so a stale thought costs one revision's attention and then stops
+mattering.
+
+**The tools are the point.** Without them it is a model musing over a context window, which is
+the shape that produces confident prose about nothing. The prompt says so plainly and names the
+failure: *"Do not summarise your situation back to yourself"* — a recital of what is open reads as
+work, costs the same as work, and changes nothing.
+
+**It has no trigger of its own.** It rides on a maintenance session that was already justified.
+Giving it one would mean inventing a number for how often an agent ought to think.
+
+### Not given to `reflect`, and that was the question worth asking
+
+The obvious place to surface a thinking document is the step that opens every session. It is the
+wrong place.
+
+`reflect` judges how one exchange landed, and its documented failure mode is finding significance
+that is not there — which is why its prompt leads with "most of the time it does not" and its
+fallback claims no signal. Handing it the agent's unrelated preoccupations invites exactly that
+failure: background musing is not evidence about whether an answer worked, and a step looking for
+a verdict will find one in whatever it is given. This file already records the same lesson twice,
+in `last_contribution` priming `satisfied` and in a fifth block costing `restate` two cases.
+
+The readers are the steps that **act** — `plan`, `research`, and `initiate` — where continuity of
+thought is the whole point rather than a distraction from a judgement.
+
+## Speaking first
+
+`steps/initiate.ts`, `core/initiative.ts`, `store/channelRegistry.ts`, and
+`[session.initiative]`. The only path in the harness that writes to a channel nobody prompted.
+
+Everything else the agent says is an answer: somebody spoke, and the entire entry path exists to
+decide whether and how to reply. This decides to speak into silence, and it is the feature most
+likely to be regretted — so every bound is countable and none of them is in the prompt.
+
+**Two kinds of target, and choosing between them is a real decision.** A channel is for something
+that concerns whoever is in it; a direct message is for something that is theirs specifically. A
+DM is more intrusive than a message in a room somebody can scroll past, so the bar is higher, not
+lower — `dm_enabled` turns that half off on its own.
+
+| gate | applies to | why |
+|---|---|---|
+| **the silence ladder**, below | channels | how much silence excuses speaking depends on who has been talking |
+| quiet for less than `max_silent_ms` (2w) | channels | a room nobody has touched in a fortnight is not waiting to be reopened, it is over |
+| the agent has spoken there before | channels | starting a conversation somewhere it never has is the worst version of this |
+| **has an impression of them** | people | not merely somebody who once spoke: an impression means several exchanges of noticing, which is the difference between writing to somebody you know and writing to a name in a log |
+| heard from within `dm_stale_ms` (30d) | people | the DM equivalent of `max_silent_ms`, and the same trap — messaging somebody who left months ago is worse than messaging nobody |
+| `cooldown_ms` (6h) since the last one, **across every target** | both | per-target alone would let an agent with six rooms and four contacts open ten at once, each locally reasonable |
+| `target_cooldown_ms` (3d) since *this* target | both | stops it going back to the same room or person every time the global cooldown lapses, which reads as pestering even when each message is fine |
+
+**`max_silent_ms` is the guard that is easy to leave out.** The survey sorts by silence, so
+without an upper bound the deadest channel on record is permanently the *most* eligible one.
+
+### The silence ladder
+
+A flat "quiet for an hour" got both ends wrong: it blocked the agent from picking up a live
+conversation it had a place in, *and* let it monologue into a room where nobody had answered it
+twice. So the bar moves with who has been doing the talking.
+
+| silence | allowed when |
+|---|---|
+| more than `free_after_ms` (6h) | always — hours have passed, so even following its own last message is reopening a subject rather than talking over anybody |
+| more than `recent_after_ms` (1h) | the agent did not send the last **two**. A third would be three in a row |
+| sooner than that | somebody else spoke last. The conversation is still live |
+
+It turns on `trailingAgentMessages` — how many messages at the *end* are the agent's own — and
+that count exists because `messagesSinceAgentSpoke` cannot answer the question: it is 0 whether
+the agent spoke once at the end or three times.
+
+**Note what the bottom rung overlaps with.** The ordinary reply path already saw that last message
+and decided not to answer it. This is a second look at the same moment from a different question —
+"do I have something to start?" rather than "should I answer this?" — and it only happens inside a
+maintenance session at all, which needs the channel idle and other work already waiting.
+
+**The step is only ever shown channels that already passed.** It is asked "is any of this worth
+saying?", never "is this a reasonable hour?" — a model that can talk itself into speaking is a
+model that will. The channel enum is compiled from the survivors, so it cannot name a room the
+harness ruled out.
+
+**It picks targets; `outreach` writes each message.** Composing four messages in one constrained
+decode produces four variations on one paragraph. But `initiate` still decodes a one-line `intent`
+per target, and that half cannot be deferred: "is this worth saying?" is unanswerable without
+knowing what would be said — the same reason `stance` asks what you would actually say before
+scoring it. A selection step with no intent picks targets and leaves the composer to find
+something to tell them.
+
+**Each `outreach` is told who else is being written to**, through `${other_targets}`. Two failures
+follow from not knowing: everybody gets the same message, and one person is told in confidence
+something another is about to hear. A person writing three messages knows they are writing three.
+
+**An `outreach` sees its own target's context, not the session's.** The session is anchored
+wherever the sweep fired and the message is going somewhere else, so `targetInput` swaps in that
+channel's transcript, plan, and last restatement — or, for a person, their summary, so
+`user_summary` resolves to the target rather than to whoever the session happened to be about. It
+has no tools: `initiate` already investigated, and a tool loop would double the calls per target
+for a short message.
+
+**It leads with the last thing said there, so the message can branch from something.**
+`recent_messages` already ends with it, but buried at the foot of a transcript it is one line among
+twelve; singled out as `latest_message` it is the thing to pick up. "You were asking about the
+vendor version: they're on 22.4" continues a conversation, and the same fact with no anchor
+arrives from nowhere. Behind it sits `prior_request` — that channel's own restatement of what it
+was working on.
+
+For a person the harness looks across *every* channel for the last thing they said, because a DM
+the agent is opening has no shared history of its own to draw on. The prompt is explicit that a
+link should not be manufactured where there is genuinely nothing to pick up.
+
+**Silence is the fallback.** Every other fallback here leans toward answering, because silence
+where an answer was expected reads as being ignored. This one inverts for the same reason: nobody
+is waiting, nobody asked, and a parse failure is not grounds to interrupt somebody.
+
+**A DM has no fallback to anywhere public.** An adapter without `dm` skips the target and logs it
+rather than posting in a channel, which would be the worst available way to fail at a private
+message. Slack opens one with `conversations.open`, which is idempotent, so nothing is cached.
+
+**Delivery belongs to the daemon, not the session.** The targets are not the session's own channel,
+`runSession` has no adapter, and the cooldowns span every target. The message is appended to that
+channel's history like anything else the agent said, so the next session there reads it as the
+agent's last contribution and `reflect` can judge how it landed. The cooldown is stamped **after**
+the send succeeds — stamping it first would silence the agent for hours on the strength of a
+failed delivery.
+
+**It runs last, and only alongside other work.** A sweep that fired for nothing else and then
+decided to speak would be an agent looking for an excuse.
+
+
+### A step can run twice in one session
+
+`outreach` is the first one that does, and it broke `sealStep` immediately: sealed output is
+`chmod 444`, so the second write to `outreach.md` failed with `EACCES` and took the session with
+it.
+
+Suffixed rather than overwritten — `outreach.md`, `outreach_2.md` — because sealed output is
+immutable, so the answer to a collision is a second file and never a replaced one. `CompletedStep`
+records the name actually written rather than the one the step asked for.
+
+### The channel registry
+
+`store/channelRegistry.ts`. Name, last activity, and how many messages since the agent last spoke,
+per channel, on disk.
+
+**The daemon already tracked most of this and could not use it.** Its in-memory `channels` map
+only holds rooms that have seen traffic since the process started, so a survey built from it would
+show a channel the agent talked in yesterday as one it has never heard of. A survey of
+conversations has to survive a restart or it is a survey of the last few minutes.
+
+**The name is stored because an id is not something to say out loud.** `C07ABCXYZ` is what Slack
+calls a channel and `#deploys` is what the people in it call it. Resolved through
+`conversations.info` and cached like a user name; it needs `channels:read`, and a failure falls
+back to the id rather than dropping anything.
+
+Counts are derived from history on demand rather than maintained, because a counter that drifts
+from the messages it counts is worse than one computed once per idle sweep. `fromAgent` is checked
+alongside the author name, since history written by an older build labels the agent's own turns
+`agent` rather than by name — a survey that missed those would report the agent as never having
+spoken in its oldest channels.
+
 ## Maintenance sessions — the sleep phase
 
 `core/trigger.ts`, `session/maintenance.ts`, `[session.maintenance]`. A session with no incoming
@@ -1334,6 +2158,11 @@ and no exchange.
 and what?" before a trigger is created, and its answer becomes the trigger's reason and every
 step's topic — so no session can appear in `sessions/` unexplained. A maintenance session with
 nothing in it opens a directory, spends a digest call, and summarises having done nothing.
+
+**`reflect` is the second tenant**, for a reaction nobody followed up. Note what it does *not*
+get: a maintenance session never becomes the prior session, so its recommendations reach nothing.
+That is correct — they are advice for answering, and nobody asked anything. The durable output is
+the impression.
 
 **Impression synthesis is the first tenant**, and the reason the item was worth building. It was
 queued at the end of every session, where the roadmap noted it had no business being: it is
@@ -1441,6 +2270,23 @@ nobody wants.
 channels of one instance; the shared daemon below made it the cross-instance one, with no change
 to this file.
 
+**The tool loop was not taking it, which is the worst place to have missed.** `callModel` leased
+dutifully; `toolLoop.ts` called `chat()` directly, so `research` and `reason` — the two steps the
+lease exists for, minutes each on the 27B — ran their whole loop unleased while the cheap final
+schema call queued politely. Fixed by leasing **per iteration**: an iteration is one call on the
+weights, and the tool execution between iterations is sqlite and HTTP that has no business holding
+the large model.
+
+**A test asserted this was fine.** `expect(waits[1]).toBeGreaterThanOrEqual(0)` is true of every
+number a `waitedMs` can hold, so it passed against a lease that recorded nothing — the same
+"written from the code" failure as the compaction threshold. It now asserts a real quantity, and
+`mockOllama` takes `delayMs` because **an instantly-answering server cannot test overlap at all**:
+two "concurrent" calls both finish before either could have queued. Any test about contention
+needs the server to hold.
+
+Found by running two instances and reading `waitedMs: 0` on every step of an 866s session in which
+one of them was visibly queued — the trace showed beta with a `reason.partial` and alpha without.
+
 ## One process, every agent
 
 `daemon.ts`, `instance/`, `adapters/console.ts`. One daemon hosts every instance under
@@ -1473,6 +2319,23 @@ was a convenient override; with several, that same export would apply to *every*
 silently connect them all as one bot. Verified live — galatea and nephele connect as `U0BMTBXC59C`
 and `U0BMPF0A815` from one process.
 
+**One daemon per instance directory, enforced by a lock file.** `instance/lock.ts`
+writes `daemon.pid` into each instance it claims, all-or-nothing, and refuses to
+start over a live one. This is a correctness guard rather than tidiness: two
+daemons over one directory is precisely where `model/lease.ts` cannot reach and
+the gatekeeper's read-then-write stops being atomic.
+
+**A lock also records the host that wrote it, and one from elsewhere is refused
+regardless of liveness.** PIDs are namespaced per container, so a host daemon and
+a container daemon read each other's locks as numbers from their own namespace —
+`isAlive` then answers confidently and wrongly in either direction. Found the
+expensive way: a first attempt defaulted a missing `host` field to *the reader's*
+hostname, so the container called the host daemon's lock local, found the pid dead
+in its own namespace, and started a second daemon over the same instances.
+**Unknown origin must never read as "mine"** — refusing costs one `--force` after
+a crash, which is loud and recoverable; the permissive reading costs invisible
+contention and a knowledge store with two writers.
+
 **One process is one blast radius.** An instance that cannot start is reported and skipped rather
 than taking the others down — a missing token is specific to one agent — and the per-channel
 drain's existing isolation covers a failed session. Ending the console's input ends the daemon;
@@ -1487,10 +2350,17 @@ question the log exists to answer, and an unprefixed line cannot answer it.
 
 Two `readline` interfaces on one stdin both receive every line and both print a prompt, so the
 terminal belongs to `adapters/console.ts` and the CLI adapters attach to it. A line typed there
-goes to *every* instance listening, each deciding on its own whether it was for them — the same
-arrangement as a Slack channel with two bots in it, which makes participation damping and standing
-down testable without a workspace. Measured: with two console instances and one open question,
-one answered and the other was damped into silence by its draw.
+goes to *every* instance listening, each deciding on its own whether it was for them. Measured:
+with two console instances and one open question, one answered and the other was damped into
+silence by its draw.
+
+**It is not a faithful Slack room, in the one respect that matters most here.** A console reply
+goes to stdout and nowhere else, so a sibling never sees it. On Slack it would arrive as an
+ordinary inbound message — `shouldIgnore` filters only the bot's *own* user id — which is what
+every stand-down mechanism depends on: the deferral reads history after its wait, `update` needs
+the arrival in its inbox, and `countParticipants` counts identities that have *spoken*. None of
+those can fire on the console. So the console tests participation damping, which is decided before
+anyone answers, and cannot test standing down at all.
 
 **Attaching is passive; the daemon calls `ready()` once everyone has started.** Opening the reader
 on the first subscriber meant a piped message could be delivered before the second instance had
@@ -1512,8 +2382,39 @@ reason, and draft together.
 
 Exhaustion is not a failure: the queue truncates to the closing steps, **plus `respond` if a
 reply was promised and not yet written**. Someone waiting gets an answer built from whatever was
-gathered. A step's timeout is also clamped to the session's remaining wallclock, so a step
-cannot outlive the session that queued it.
+gathered.
+
+**The wallclock budget gates optional work only.** `stepTimeoutMs` clamps a step to the session's
+remaining wallclock — floored at `MIN_STEP_MS` — only when it is one of `selectable_steps`
+(`research`/`reason`/`draft`/`plan`, the ones `schedule`/`adjust`/`plan` actually chose to spend
+the budget on). Every other step — `reflect`, `read`, `stance`, `restate`, `schedule`, `respond`,
+`summarize`, `review`, `debrief`, `impression` — runs at its own full configured `timeout_ms`,
+regardless of how much of the session's wallclock earlier steps already spent. Each is still
+bounded by that timeout against a runaway loop; it is just no longer *additionally* shrunk by
+somebody else's slow `research` call.
+
+**Seen live** (`galatea/000112`): `schedule` picked `reason` and `draft` to design ASCII art, a
+legitimately hard task, and both burned their entire configured timeout on thinking with zero
+emitted content — `reason`'s full 600s, then `draft` clamped to whatever of the 900s session
+budget was left. By the time `respond` and `review` took their turn the wallclock was already
+spent, and the old formula — `Math.max(MIN_STEP_MS, Math.min(model.timeoutMs, remainingMs(budget)))`,
+applied to *every* step — floored both to the 5-second `MIN_STEP_MS`, nowhere near enough for a
+real call on either. The session recorded four separate `failure.md`s and sent no reply at all.
+
+**This is the second time the same shape of bug hit `respond` specifically**, and the fix this
+time is structural rather than another patch on top: a prior version tried granting `respond`
+emergency wallclock past the budget the moment it was freshly re-queued after an exhaustion
+truncation (`budget.maxWallclockMs = workingMs(budget) + grant`) — which worked for that one
+path, but `respond` reaching its ordinary turn in an already-queued sequence (as it did in
+`000112`) never went through that branch, so the starvation returned by a different route. Excluding
+every non-selectable step from the clamp entirely removes the failure mode rather than covering
+another case of it.
+
+**`[steps.respond] timeout_ms = 600000`, set explicitly rather than left to inherit
+`request_timeout_ms`.** No longer protected by the session clamp, it needs to be a real ceiling on
+its own — generous, since a reply can legitimately run long and is the one thing worth being late
+for, but still finite: a step that only ever "thinks" and never emits content should still fail on
+its own deadline eventually rather than run forever.
 
 **The reply is handed over the moment `respond` seals**, through `onReply`, before the closing
 steps run. It used to wait for `summarize`, `review`, and `impression` — ten to twenty seconds
@@ -1536,4 +2437,10 @@ Not yet settled — raise them rather than silently picking:
 - Whether `defer_to_session` survives. It measures 0/3 because it names no distinct action; it
   gets one only if the supervisor starts consuming arrivals instead of letting them open their
   own sessions.
+- Whether `stance` earns a larger role than `fast`. It is the one genuinely subjective judgement
+  on the entry path and it now has the persona and the sender's summary to work from, neither of
+  which the old analyst-voiced `react` could use — so the question is open again on new evidence,
+  and unmeasured.
+- Whether the persona should revise itself, and against what. Static config is what shipped;
+  see "The persona" above for why the dynamic version wants the impression loop's guards.
 - Whether plans are per-channel or per-goal, and which step may revise one.

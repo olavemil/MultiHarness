@@ -25,15 +25,34 @@ export function windowEntries(
     .map((message, index) => ({ localId: `m${index + 1}`, message }));
 }
 
-/** `[m3] 09:14 olav: morning` — id, time, sender, content. */
+/**
+ * `[m3] 09:14 olav: morning` — id, time, sender, content.
+ *
+ * **Every turn is labelled with its author's name, the agent's included.** This
+ * used to render the agent's own messages as `you`, which forced the only step
+ * that reads this window to open by disclaiming its own input: *"its messages
+ * are marked `you`. Ignore that label — you are not that participant."* A prompt
+ * apologising for the harness's rendering is the harness's bug, not the
+ * prompt's.
+ *
+ * It also made the transcript non-neutral. `reply_target` and its successor
+ * `read` are objective steps whose entire job is deciding which participant a
+ * message is aimed at, and a transcript that has already picked one out as
+ * "you" has answered part of that question before the model reads it. With two
+ * instances in a channel it was worse still: one agent's turns read `you` and
+ * its sibling's read `nephele`, so the same conversation rendered differently
+ * depending on who was looking.
+ *
+ * `fromAgent` still carries the fact for code that needs it.
+ */
 export function renderWindow(entries: readonly WindowEntry[]): string {
-  if (entries.length === 0) return "(no earlier messages in this channel)";
+  if (entries.length === 0) return "";
 
   return entries
-    .map(({ localId, message }) => {
-      const author = message.fromAgent ? "you" : message.author;
-      return `[${localId}] ${clockTime(message.at)} ${author}: ${message.text}`;
-    })
+    .map(
+      ({ localId, message }) =>
+        `[${localId}] ${clockTime(message.at)} ${message.author}: ${message.text}`,
+    )
     .join("\n");
 }
 

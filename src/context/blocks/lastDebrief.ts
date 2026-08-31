@@ -10,6 +10,9 @@ import type { ContextBlock } from "./types.ts";
  */
 export const lastDebrief: ContextBlock = {
   name: "last_debrief",
-  resolve: ({ prior }) =>
-    prior?.debrief.trim() || "(the previous session was not interrupted)",
+  heading: {
+    agent: "A question the last session was interrupted by and may still owe",
+    observer: "What interrupted the previous session, and what it may still owe",
+  },
+  resolve: ({ prior }) => prior?.debrief.trim() || undefined,
 };

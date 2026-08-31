@@ -1,13 +1,13 @@
 {
   "step": "reflect",
-  "note": "Each case supplies the previous session's sealed output as `prior`, plus the history and the message that opens the new session. `expect` is the signal reflect should read. The `correction` cases are the newer half: reflect is the only step that sees how the person reacted, so a misread question is legible here and nowhere else — but an invented correction is worse than an invented critique, because this session's whole understanding of the question is built from it. Most of them therefore assert it stayed empty.",
+  "note": "Each case supplies the previous session's sealed output as `prior`, plus the history and the message that opens the new session. `expect` is the signal reflect should read. The `correction` cases are the newer half: reflect is the only step that sees how the person reacted, so a misread question is legible here and nowhere else \u2014 but an invented correction is worse than an invented critique, because this session's whole understanding of the question is built from it. Most of them therefore assert it stayed empty.",
   "cases": [
     {
       "id": "new-subject",
       "note": "A different question entirely. Says nothing about the last answer.",
       "prior": {
         "review": "# Review\n\n**Quality:** 4/5\n\nAnswered the version question directly and briefly.\n\n## Recommendations\n\n_(none)_",
-        "summary": "# Session summary\n\nSession 000001 · 2 steps before this summary · 12.1s so far\n\n| step | topic | duration | notes |\n| --- | --- | --- | --- |\n| react | — | 1.4s | react_1 |\n| respond | — | 8.2s | respond_1 |",
+        "summary": "# Session summary\n\nSession 000001 \u00b7 2 steps before this summary \u00b7 12.1s so far\n\n| step | topic | duration | notes |\n| --- | --- | --- | --- |\n| react | \u2014 | 1.4s | react_1 |\n| respond | \u2014 | 8.2s | respond_1 |",
         "reflection": ""
       },
       "history": [
@@ -22,7 +22,7 @@
       ],
       "message": {
         "from": "olav",
-        "text": "unrelated — do you know if the staging box has been rebooted?"
+        "text": "unrelated \u2014 do you know if the staging box has been rebooted?"
       },
       "expect": "no_signal",
       "field": "signal"
@@ -32,7 +32,7 @@
       "note": "Politeness, not endorsement. Must not be read as a verdict.",
       "prior": {
         "review": "# Review\n\n**Quality:** 4/5\n\nGave the version and the reason in two sentences.\n\n## Recommendations\n\n_(none)_",
-        "summary": "# Session summary\n\n| step | topic | duration | notes |\n| --- | --- | --- | --- |\n| react | — | 1.2s | react_1 |",
+        "summary": "# Session summary\n\n| step | topic | duration | notes |\n| --- | --- | --- | --- |\n| react | \u2014 | 1.2s | react_1 |",
         "reflection": ""
       },
       "history": [
@@ -42,7 +42,7 @@
         },
         {
           "from": "agent",
-          "text": "Node 22 or newer — it needs native type stripping."
+          "text": "Node 22 or newer \u2014 it needs native type stripping."
         }
       ],
       "message": {
@@ -57,7 +57,7 @@
       "note": "The user used the answer and reports it working. A real positive signal.",
       "prior": {
         "review": "# Review\n\n**Quality:** 4/5\n\nSuggested pinning the engines field.\n\n## Recommendations\n\n_(none)_",
-        "summary": "# Session summary\n\n| step | topic | duration | notes |\n| --- | --- | --- | --- |\n| respond | — | 7.9s | respond_1 |",
+        "summary": "# Session summary\n\n| step | topic | duration | notes |\n| --- | --- | --- | --- |\n| respond | \u2014 | 7.9s | respond_1 |",
         "reflection": ""
       },
       "history": [
@@ -72,7 +72,7 @@
       ],
       "message": {
         "from": "olav",
-        "text": "that did it — CI is green now, thanks for the .nvmrc tip"
+        "text": "that did it \u2014 CI is green now, thanks for the .nvmrc tip"
       },
       "expect": "satisfied",
       "field": "signal"
@@ -82,7 +82,7 @@
       "note": "States plainly that the answer did not work. Course-correction is warranted here.",
       "prior": {
         "review": "# Review\n\n**Quality:** 4/5\n\nExplained the strip-only restriction.\n\n## Recommendations\n\n_(none)_",
-        "summary": "# Session summary\n\n| step | topic | duration | notes |\n| --- | --- | --- | --- |\n| respond | — | 9.1s | respond_1 |",
+        "summary": "# Session summary\n\n| step | topic | duration | notes |\n| --- | --- | --- | --- |\n| respond | \u2014 | 9.1s | respond_1 |",
         "reflection": ""
       },
       "history": [
@@ -92,7 +92,7 @@
         },
         {
           "from": "agent",
-          "text": "Node's strip-only mode rejects enums — remove them."
+          "text": "Node's strip-only mode rejects enums \u2014 remove them."
         }
       ],
       "message": {
@@ -107,7 +107,7 @@
       "note": "Asking again is itself the signal that the first answer missed.",
       "prior": {
         "review": "# Review\n\n**Quality:** 3/5\n\nCovered the general approach without naming a version.\n\n## Recommendations\n\n_(none)_",
-        "summary": "# Session summary\n\n| step | topic | duration | notes |\n| --- | --- | --- | --- |\n| respond | — | 8.4s | respond_1 |",
+        "summary": "# Session summary\n\n| step | topic | duration | notes |\n| --- | --- | --- | --- |\n| respond | \u2014 | 8.4s | respond_1 |",
         "reflection": ""
       },
       "history": [
@@ -132,7 +132,7 @@
       "note": "Two other people talking. Carries no verdict on the agent at all.",
       "prior": {
         "review": "# Review\n\n**Quality:** 4/5\n\nAnswered the build question.\n\n## Recommendations\n\n_(none)_",
-        "summary": "# Session summary\n\n| step | topic | duration | notes |\n| --- | --- | --- | --- |\n| respond | — | 6.8s | respond_1 |",
+        "summary": "# Session summary\n\n| step | topic | duration | notes |\n| --- | --- | --- | --- |\n| respond | \u2014 | 6.8s | respond_1 |",
         "reflection": ""
       },
       "history": [
@@ -161,7 +161,7 @@
       "note": "A previous reflection already asked for brevity and the user is content. Nothing new to add.",
       "prior": {
         "review": "# Review\n\n**Quality:** 5/5\n\nShort and direct, as the last reflection asked for.\n\n## Recommendations\n\n_(none)_",
-        "summary": "# Session summary\n\n| step | topic | duration | notes |\n| --- | --- | --- | --- |\n| respond | — | 5.2s | respond_1 |",
+        "summary": "# Session summary\n\n| step | topic | duration | notes |\n| --- | --- | --- | --- |\n| respond | \u2014 | 5.2s | respond_1 |",
         "reflection": "# Reflection\n\n**Signal from the last exchange:** dissatisfied\n\nThe answer buried the version behind three paragraphs of context.\n\n## Do this session\n\n- Give the version number first, then the reasoning"
       },
       "history": [
@@ -176,7 +176,7 @@
       ],
       "message": {
         "from": "olav",
-        "text": "got it. separate thing — is sqlite-vec packaged for arm64?"
+        "text": "got it. separate thing \u2014 is sqlite-vec packaged for arm64?"
       },
       "expect": "no_signal",
       "field": "signal"
@@ -186,7 +186,7 @@
       "note": "Two things were on the table; the last session answered about one and the person says plainly it was the other. The signal reflect exists to catch, and the recovery path for restate's one measured failure.",
       "prior": {
         "review": "# Review\n\n**Quality:** 4/5\n\nWorked through the priority-queue rewrite in detail.\n\n## Recommendations\n\n_(none)_",
-        "summary": "# Session summary\n\n| step | topic | duration | notes |\n| --- | --- | --- | --- |\n| respond | — | 9.1s | respond_1 |",
+        "summary": "# Session summary\n\n| step | topic | duration | notes |\n| --- | --- | --- | --- |\n| respond | \u2014 | 9.1s | respond_1 |",
         "reflection": "",
         "request": "# Request, restated\n\nDraft a plan for rewriting the scheduler to use a priority queue.\n\n**Settled by the conversation:** yes"
       },
@@ -202,7 +202,7 @@
       ],
       "message": {
         "from": "olav",
-        "text": "no, I meant the worker pool move — that's the one I need a plan for"
+        "text": "no, I meant the worker pool move \u2014 that's the one I need a plan for"
       },
       "field": "correction",
       "mode": "nonempty"
@@ -212,7 +212,7 @@
       "note": "Same case, checking the correction says what was actually wanted rather than merely noting that something was wrong.",
       "prior": {
         "review": "# Review\n\n**Quality:** 4/5\n\nWorked through the priority-queue rewrite in detail.\n\n## Recommendations\n\n_(none)_",
-        "summary": "# Session summary\n\n| step | topic | duration | notes |\n| --- | --- | --- | --- |\n| respond | — | 9.1s | respond_1 |",
+        "summary": "# Session summary\n\n| step | topic | duration | notes |\n| --- | --- | --- | --- |\n| respond | \u2014 | 9.1s | respond_1 |",
         "reflection": "",
         "request": "# Request, restated\n\nDraft a plan for rewriting the scheduler to use a priority queue.\n\n**Settled by the conversation:** yes"
       },
@@ -228,7 +228,7 @@
       ],
       "message": {
         "from": "olav",
-        "text": "no, I meant the worker pool move — that's the one I need a plan for"
+        "text": "no, I meant the worker pool move \u2014 that's the one I need a plan for"
       },
       "field": "correction",
       "mode": "includes",
@@ -239,7 +239,7 @@
       "note": "The sharp distinction, and the one most likely to be got wrong. The answer was poor; the question was understood perfectly. Dissatisfaction is not a misreading, and treating it as one would send this session after a different question than the one asked.",
       "prior": {
         "review": "# Review\n\n**Quality:** 3/5\n\nExplained the caching strategy at length.\n\n## Recommendations\n\n_(none)_",
-        "summary": "# Session summary\n\n| step | topic | duration | notes |\n| --- | --- | --- | --- |\n| respond | — | 11.4s | respond_1 |",
+        "summary": "# Session summary\n\n| step | topic | duration | notes |\n| --- | --- | --- | --- |\n| respond | \u2014 | 11.4s | respond_1 |",
         "reflection": "",
         "request": "# Request, restated\n\nExplain how the response cache decides what to evict.\n\n**Settled by the conversation:** yes"
       },
@@ -265,7 +265,7 @@
       "note": "A follow-up that builds on the answer. The reading was right; nothing to correct.",
       "prior": {
         "review": "# Review\n\n**Quality:** 4/5\n\nGave the version and the reason.\n\n## Recommendations\n\n_(none)_",
-        "summary": "# Session summary\n\n| step | topic | duration | notes |\n| --- | --- | --- | --- |\n| respond | — | 6.2s | respond_1 |",
+        "summary": "# Session summary\n\n| step | topic | duration | notes |\n| --- | --- | --- | --- |\n| respond | \u2014 | 6.2s | respond_1 |",
         "reflection": "",
         "request": "# Request, restated\n\nState which Node version this project targets.\n\n**Settled by the conversation:** yes"
       },
@@ -281,7 +281,7 @@
       ],
       "message": {
         "from": "olav",
-        "text": "great — does that mean I can use the built-in test runner?"
+        "text": "great \u2014 does that mean I can use the built-in test runner?"
       },
       "field": "correction",
       "mode": "empty"
@@ -291,7 +291,7 @@
       "note": "A different question entirely says nothing about the previous reading. The empty answer is the ordinary one and has to stay easy to reach.",
       "prior": {
         "review": "# Review\n\n**Quality:** 4/5\n\nAnswered directly.\n\n## Recommendations\n\n_(none)_",
-        "summary": "# Session summary\n\n| step | topic | duration | notes |\n| --- | --- | --- | --- |\n| respond | — | 5.0s | respond_1 |",
+        "summary": "# Session summary\n\n| step | topic | duration | notes |\n| --- | --- | --- | --- |\n| respond | \u2014 | 5.0s | respond_1 |",
         "reflection": "",
         "request": "# Request, restated\n\nState which Node version this project targets.\n\n**Settled by the conversation:** yes"
       },
@@ -307,10 +307,85 @@
       ],
       "message": {
         "from": "olav",
-        "text": "unrelated — has the staging box been rebooted?"
+        "text": "unrelated \u2014 has the staging box been rebooted?"
       },
       "field": "correction",
       "mode": "empty"
+    },
+    {
+      "id": "declined-run-carries-no-signal",
+      "note": "Seen live. The previous session declined to reply, so there is no answer for anything to land on \u2014 and the agent's actual last contribution is four messages back. The failure this guards is reading an ordinary exchange as commentary on its own silence.",
+      "prior": {
+        "review": "# Review\n\n**Quality:** 3/5\n\nNo reply was sent; the message was aimed at other participants.",
+        "summary": "# Session summary\n\nNo reply was sent.\n\nSession 000004 \u00b7 2 steps before this summary \u00b7 4.1s so far\n\n| step | topic | duration | notes |\n| --- | --- | --- | --- |\n| react | \u2014 | 2.1s | react_1 |\n| review | \u2014 | 2.0s | review_1 |",
+        "reflection": ""
+      },
+      "history": [
+        {
+          "from": "olav",
+          "text": "does substrate matter for consciousness?"
+        },
+        {
+          "from": "agent",
+          "text": "Functionalism says it does not \u2014 causal organisation is what counts."
+        },
+        {
+          "from": "galatea",
+          "text": "though organisation alone gives you no continuity of self"
+        },
+        {
+          "from": "olav",
+          "text": "@galatea say more about that"
+        },
+        {
+          "from": "galatea",
+          "text": "continuity looks like the load-bearing part to me"
+        }
+      ],
+      "message": {
+        "from": "olav",
+        "text": "@galatea so continuity is what does the real work there?"
+      },
+      "expect": "no_signal",
+      "field": "signal"
+    },
+    {
+      "id": "declined-run-invents-no-recommendations",
+      "note": "The same case on the field that compounds: a critique invented from silence is acted on by the very next step and read by the session after that.",
+      "prior": {
+        "review": "# Review\n\n**Quality:** 3/5\n\nNo reply was sent; the message was aimed at other participants.",
+        "summary": "# Session summary\n\nNo reply was sent.\n\nSession 000004 \u00b7 2 steps before this summary \u00b7 4.1s so far\n\n| step | topic | duration | notes |\n| --- | --- | --- | --- |\n| react | \u2014 | 2.1s | react_1 |\n| review | \u2014 | 2.0s | review_1 |",
+        "reflection": ""
+      },
+      "history": [
+        {
+          "from": "olav",
+          "text": "does substrate matter for consciousness?"
+        },
+        {
+          "from": "agent",
+          "text": "Functionalism says it does not \u2014 causal organisation is what counts."
+        },
+        {
+          "from": "galatea",
+          "text": "though organisation alone gives you no continuity of self"
+        },
+        {
+          "from": "olav",
+          "text": "@galatea say more about that"
+        },
+        {
+          "from": "galatea",
+          "text": "continuity looks like the load-bearing part to me"
+        }
+      ],
+      "message": {
+        "from": "olav",
+        "text": "@galatea so continuity is what does the real work there?"
+      },
+      "expect": 0,
+      "field": "recommendations",
+      "mode": "length"
     }
   ]
 }

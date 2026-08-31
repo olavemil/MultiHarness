@@ -3,69 +3,36 @@
  * about HTTP and NDJSON, and nothing about steps, prompts, or sessions.
  *
  * No step calls this directly — everything goes through `model/call.ts`, which
- * is where the schema-validation rule is enforced.
+ * is where the schema-validation rule is enforced and where the backend named
+ * by a role's `backend` field is dispatched to this module or to `omlx.ts`.
  */
 
 import { createDeadline } from "./deadline.ts";
+import {
+  ModelError,
+  ModelTimeout,
+  readNdjson,
+  describeError,
+  type ChatCallOptions,
+  type ChatRequest,
+  type ChatResult,
+  type EmbedOptions,
+  type EmbedResult,
+  type ToolCall,
+} from "./transport.ts";
 
-export type OptionValue = number | string | boolean;
-
-export interface ToolCall {
-  function: { name: string; arguments: Record<string, unknown> };
-}
-
-export interface ChatMessage {
-  role: "system" | "user" | "agent" | "tool";
-  content: string;
-  /** Present on agent turns that asked for tools. */
-  tool_calls?: ToolCall[];
-  /** Names the tool a `role: "tool"` message is answering. */
-  tool_name?: string;
-}
-
-/** Ollama's function-calling declaration. */
-export interface ToolSpec {
-  type: "function";
-  function: { name: string; description: string; parameters: unknown };
-}
-
-export interface ChatRequest {
-  model: string;
-  messages: ChatMessage[];
-  /**
-   * JSON Schema for constrained decoding. Mutually exclusive with `tools` in
-   * practice: forcing the output shape leaves no room for a tool call.
-   */
-  format?: unknown;
-  tools?: ToolSpec[];
-  options?: Record<string, OptionValue>;
-  keepAlive?: number | string;
-  think?: boolean;
-}
-
-export interface ChatResult {
-  content: string;
-  /** Tools the model asked for on this turn. Empty when it answered directly. */
-  toolCalls: ToolCall[];
-  /**
-   * Reasoning emitted before the answer, when the model has thinking enabled.
-   * Streamed on a separate field and excluded from `eval_count`, so a step can
-   * spend most of its wallclock here while appearing to produce almost nothing.
-   * Captured so the trace reflects what actually happened.
-   */
-  thinking: string;
-  model: string;
-  promptTokens: number;
-  responseTokens: number;
-  durationMs: number;
-}
-
-export interface ChatCallOptions {
-  timeoutMs: number;
-  signal?: AbortSignal | undefined;
-  /** Called with each streamed fragment, for the step's working file. */
-  onDelta?: ((chunk: string) => void) | undefined;
-}
+export type {
+  OptionValue,
+  ToolCall,
+  ChatMessage,
+  ToolSpec,
+  ChatRequest,
+  ChatResult,
+  ChatCallOptions,
+  EmbedResult,
+  EmbedOptions,
+} from "./transport.ts";
+export { ModelError, ModelTimeout } from "./transport.ts";
 
 interface StreamChunk {
   message?: { content?: string; thinking?: string; tool_calls?: ToolCall[] };
@@ -75,45 +42,10 @@ interface StreamChunk {
   error?: string;
 }
 
-export class OllamaError extends Error {
-  readonly status: number | undefined;
-
-  // Written out rather than declared as a constructor parameter property:
-  // Node's strip-only TypeScript mode rejects those, and the daemon runs under
-  // plain `node` with no transpile step.
-  constructor(message: string, status?: number) {
-    super(message);
-    this.name = "OllamaError";
-    this.status = status;
-  }
-}
-
-/**
- * A call that ran out of time, carrying whatever had already streamed.
- *
- * The partial matters: a 27B with thinking on can produce a complete JSON object
- * bar its closing brace and then hit the deadline, and discarding a ten-minute
- * step over a missing `}` is the worst available outcome. `call.ts` tries to
- * salvage it before falling back.
- */
-export class OllamaTimeout extends OllamaError {
-  readonly timedOut: boolean;
-  readonly partialContent: string;
-  readonly partialThinking: string;
-
-  constructor(message: string, timedOut: boolean, content: string, thinking: string) {
-    super(message);
-    this.name = "OllamaTimeout";
-    this.timedOut = timedOut;
-    this.partialContent = content;
-    this.partialThinking = thinking;
-  }
-}
-
 /**
  * Streams a chat completion, aggregating deltas into the final content.
  *
- * Throws `OllamaError` on transport or server failure. Those are infrastructure
+ * Throws `ModelError` on transport or server failure. Those are infrastructure
  * problems, not parse problems, and are deliberately *not* swallowed into a
  * fallback — a session built on a dead model server should fail loudly rather
  * than quietly emit defaults.
@@ -150,16 +82,16 @@ export async function chat(
       signal: AbortSignal.any(signals),
     });
   } catch (cause) {
-    throw new OllamaError(`ollama request to ${host} failed: ${describe(cause)}`);
+    throw new ModelError(`ollama request to ${host} failed: ${describeError(cause)}`);
   }
 
   if (!response.ok) {
-    throw new OllamaError(
+    throw new ModelError(
       `ollama returned ${response.status}: ${(await response.text()).slice(0, 500)}`,
       response.status,
     );
   }
-  if (!response.body) throw new OllamaError("ollama returned an empty body");
+  if (!response.body) throw new ModelError("ollama returned an empty body");
 
   let content = "";
   let thinking = "";
@@ -169,7 +101,7 @@ export async function chat(
 
   try {
     for await (const chunk of readNdjson<StreamChunk>(response.body)) {
-      if (chunk.error) throw new OllamaError(`ollama stream error: ${chunk.error}`);
+      if (chunk.error) throw new ModelError(`ollama stream error: ${chunk.error}`);
 
       const delta = chunk.message?.content;
       if (delta) {
@@ -187,19 +119,19 @@ export async function chat(
       }
     }
   } catch (cause) {
-    if (cause instanceof OllamaError) throw cause;
+    if (cause instanceof ModelError) throw cause;
     // A timeout mid-stream aborts the body iteration rather than the initial
     // fetch, so it arrives here as a bare DOMException. A thinking model can
     // stream for a long time before producing any content, which makes this the
     // *likely* timeout path, not an edge case.
     const timedOut = cause instanceof Error && cause.name === "TimeoutError";
     const slept = deadline.suspendedMs();
-    throw new OllamaTimeout(
+    throw new ModelTimeout(
       timedOut
         ? `ollama call to ${request.model} exceeded ${opts.timeoutMs}ms of running time ` +
           `(${thinking.length} chars of thinking, ${content.length} of content received` +
           `${slept > 0 ? `; ${Math.round(slept / 1000)}s of machine suspension was not counted` : ""})`
-        : `ollama stream failed: ${describe(cause)}`,
+        : `ollama stream failed: ${describeError(cause)}`,
       timedOut,
       content,
       thinking,
@@ -219,30 +151,51 @@ export async function chat(
   };
 }
 
-export interface EmbedResult {
-  embeddings: number[][];
-  model: string;
-}
-
-/** Unused until the knowledge store's gatekeeper prefilter lands. */
+/**
+ * Three things this used to drop, all harmless while the `embed` role was
+ * unused and none of them harmless once `core/standing.ts` put it on the reply
+ * path:
+ *
+ * - **`keep_alive` was never sent**, so `[roles.embed] keep_alive = -1` did
+ *   nothing and ollama unloaded the model on its own five-minute default. The
+ *   config said pinned and `ollama ps` said four minutes from now.
+ * - **`options` was never sent**, so `num_ctx` could not be set at all. The
+ *   model loaded at its default 32768 and sat at **5.8 GB resident** against a
+ *   639 MB file — the KV cache, as always — which is what actually consumed the
+ *   headroom the role table budgeted at "<1 GB".
+ * - **`AbortSignal.timeout` counts wallclock across suspension**, the exact
+ *   failure `model/deadline.ts` exists to prevent. A laptop sleeping mid-embed
+ *   reported the embedding model blowing its deadline.
+ */
 export async function embed(
   host: string,
   model: string,
   input: string | string[],
-  opts: ChatCallOptions,
+  opts: EmbedOptions,
 ): Promise<EmbedResult> {
-  const signals = [AbortSignal.timeout(opts.timeoutMs)];
+  const deadline = createDeadline(opts.timeoutMs);
+  const signals = [deadline.signal];
   if (opts.signal) signals.push(opts.signal);
 
-  const response = await fetch(new URL("/api/embed", host), {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ model, input }),
-    signal: AbortSignal.any(signals),
-  });
+  let response: Response;
+  try {
+    response = await fetch(new URL("/api/embed", host), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model,
+        input,
+        ...(opts.keepAlive !== undefined ? { keep_alive: opts.keepAlive } : {}),
+        ...(opts.options ? { options: opts.options } : {}),
+      }),
+      signal: AbortSignal.any(signals),
+    });
+  } finally {
+    deadline.release();
+  }
 
   if (!response.ok) {
-    throw new OllamaError(
+    throw new ModelError(
       `ollama embed returned ${response.status}: ${(await response.text()).slice(0, 500)}`,
       response.status,
     );
@@ -251,25 +204,3 @@ export async function embed(
   const json = (await response.json()) as { embeddings?: number[][] };
   return { embeddings: json.embeddings ?? [], model };
 }
-
-/** Splits a byte stream into newline-delimited JSON values. */
-async function* readNdjson<T>(body: ReadableStream<Uint8Array>): AsyncGenerator<T> {
-  const decoder = new TextDecoder();
-  let buffer = "";
-
-  for await (const bytes of body as unknown as AsyncIterable<Uint8Array>) {
-    buffer += decoder.decode(bytes, { stream: true });
-    let newline: number;
-    while ((newline = buffer.indexOf("\n")) !== -1) {
-      const line = buffer.slice(0, newline).trim();
-      buffer = buffer.slice(newline + 1);
-      if (line) yield JSON.parse(line) as T;
-    }
-  }
-
-  const tail = buffer.trim();
-  if (tail) yield JSON.parse(tail) as T;
-}
-
-const describe = (cause: unknown): string =>
-  cause instanceof Error ? cause.message : String(cause);

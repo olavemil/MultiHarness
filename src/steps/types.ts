@@ -1,6 +1,6 @@
 import type { z } from "zod";
 import type { Config, RoleName } from "../config/schema.ts";
-import type { BlockInput } from "../context/blocks/index.ts";
+import type { BlockInput, Voice } from "../context/blocks/index.ts";
 import type { CompletedStep } from "../core/types.ts";
 
 /**
@@ -17,14 +17,42 @@ export interface ModelStep<T> {
   name: string;
   /** Overridable per step in config; this is the step's own default. */
   defaultRole: RoleName;
+  /**
+   * Whether this step *is* the agent or judges it from outside.
+   *
+   * Not decoration. It picks the heading every appendix is labelled with, and
+   * those headings are the only thing telling a local model that the research
+   * summary in front of it is its own work rather than something the sender
+   * wrote. It also fixes the prompt's grammatical person, which is load-bearing
+   * in both directions: a classification prompt addressed as "you" makes the
+   * model conflate "is this aimed at you" with "are you being asked this", and a
+   * step asked "did *you* do well?" answers yes.
+   */
+  voice: Voice;
+  /**
+   * Mandatory blocks, referenced as `${name}` by the step's own frame.
+   *
+   * Keep this short. A step that declares one and is run without it fails
+   * loudly, which is correct — it means the step was queued in a session that
+   * cannot supply what it needs.
+   */
   contextBlocks: readonly string[];
+  /**
+   * Optional blocks, highest priority first, assembled into `${context}` and
+   * **omitted entirely when absent**.
+   *
+   * Order is by attention, not by budget: put first the block the step is most
+   * likely to be wrong without. `respond` leads with `draft`, `reason` with what
+   * research found, `restate` with a correction from `reflect`.
+   */
+  appendix?: readonly string[];
   /**
    * Built from config rather than fixed, so that constrained decoding can be
    * narrowed by configuration — `react` compiles the configured step vocabulary
    * into its schema, making an invalid step name undecodable rather than merely
    * discouraged.
    */
-  buildSchema(config: Config): z.ZodType<T>;
+  buildSchema(config: Config, input: BlockInput): z.ZodType<T>;
   /** The documented safe default used when both attempts fail validation. */
   fallback(config: Config): T;
   outputFile: string;

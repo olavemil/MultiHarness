@@ -43,10 +43,15 @@ export async function testConfig(host: string, workingDir: string): Promise<Conf
     // every session test quietly dependent on the participation formula.
     session: {
       ...config.session,
-      reply_target: false,
       selectable_steps: [],
       restate_step: "",
       participation: { ...config.session.participation, enabled: false },
+      // `standing` is off for a third reason again: it calls the embed model,
+      // and `mockOllama` serves the replies a test queues rather than an
+      // embedding endpoint. Left on, every situational step would wait out the
+      // ollama request timeout. `standing.test.ts` turns it back on against a
+      // server that does answer `/api/embed`.
+      standing: { ...config.session.standing, enabled: false },
     },
     // Several steps ship with tool allowlists, and each tool loop costs an extra
     // model round trip. Stripped here so mechanics tests count the calls they
@@ -57,7 +62,16 @@ export async function testConfig(host: string, workingDir: string): Promise<Conf
     ),
     ollama: { ...config.ollama, host, request_timeout_ms: 5_000 },
     roles: Object.fromEntries(
-      Object.entries(config.roles).map(([name, role]) => [name, { ...role, model: `test-${name}` }]),
+      Object.entries(config.roles).map(([name, role]) => [
+        name,
+        // Forced to "ollama" regardless of what the shipped config says: the
+        // test double this function points every role at is `mockOllama`, an
+        // ollama-protocol server, not an omlx one. Whichever backend
+        // `config/default.toml` defaults to is a live experiment (roadmap
+        // item, currently "omlx"); this fixture describes its own world and
+        // must not inherit that.
+        { ...role, backend: "ollama" as const, model: `test-${name}` },
+      ]),
     ),
   };
 }
@@ -90,3 +104,68 @@ export const testHistory = (): ChannelMessage[] => [
     fromAgent: false,
   },
 ];
+
+/**
+ * The two entry-step replies, in the order the harness asks for them.
+ *
+ * `react` used to answer "what does this want?" and "have I anything to add?"
+ * in one call; they are now `read` (objective) and `stance` (subjective), so
+ * every test driving a session that was not addressed by name queues two
+ * replies where it used to queue one. Spread it: `...entryReplies(true)`.
+ *
+ * A message that names the agent skips both — `read` is never queued and
+ * `stance` is sealed without a call — so those tests queue neither.
+ */
+export const entryReplies = (respond: boolean): string[] => [
+  JSON.stringify({
+    reason: respond ? "asked the agent directly" : "aimed at somebody else",
+    target: "nothing",
+    addressee: respond ? "agent" : "other",
+    wants: respond ? "answer" : "nothing",
+  }),
+  JSON.stringify({
+    reason: respond ? "I know this one" : "not mine to answer",
+    interest: respond ? 0.9 : 0,
+    reaction: "+1",
+  }),
+];
+
+/**
+ * The prompt a given step was actually sent, found by a phrase only that step's
+ * frame contains.
+ *
+ * Tests used to index `server.requests` by position, which breaks whenever the
+ * number of model calls in a session changes — splitting the entry step in two
+ * shifted every one of them at once. What a test means is "the prompt `respond`
+ * saw", so that is what it should ask for.
+ */
+const STEP_MARKERS: Record<string, string> = {
+  read: "You are analysing a conversation from outside it",
+  stance: "have you got something worth saying here?",
+  restate: "Restate that message as a single self-contained request",
+  schedule: "Decide what preparatory work",
+  respond: "You are writing a reply to",
+  draft: "You are writing a first pass at a reply",
+  reason: "this is where you work out what it means",
+  research: "you have tools to check it with",
+  plan: "You are writing the plan this channel works to",
+  reflect: "You are reviewing somebody else's finished work",
+  review: "Judge what happened, for the benefit of later sessions",
+  debrief: "Judge how it dealt with what came in",
+  impression: "You are reading a record of observations",
+};
+
+export function promptFor(
+  server: { requests: { body: { messages?: { content?: string }[] } }[] },
+  step: keyof typeof STEP_MARKERS | (string & {}),
+): string {
+  const marker = STEP_MARKERS[step];
+  if (!marker) throw new Error(`No prompt marker known for step "${step}".`);
+  const found = server.requests.find((r) => (r.body.messages?.[0]?.content ?? "").includes(marker));
+  if (!found) {
+    throw new Error(
+      `No request carried "${step}"'s prompt. ${server.requests.length} request(s) were made.`,
+    );
+  }
+  return found.body.messages?.[0]?.content ?? "";
+}

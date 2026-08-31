@@ -51,16 +51,24 @@ export const reflect: ModelStep<Reflection> = {
   kind: "model",
   name: "reflect",
   defaultRole: "digest",
-  contextBlocks: [
-    "user_summary",
-    "recent_messages",
+  voice: "observer",
+  // **Nothing is mandatory.** `reflect` used to require the incoming message,
+  // which was true of every session that ran it — until a reaction became able
+  // to trigger one on its own. A reaction with nobody speaking afterwards is
+  // exactly the case where the signal would otherwise never be read, and it is
+  // the most direct evidence this step ever gets.
+  contextBlocks: [],
+  appendix: [
+    "maintenance_batch",
     "incoming_message",
-    "prior_request",
     "reactions",
+    "last_contribution",
+    "prior_request",
     "last_review",
-    "last_session_summary",
-    "last_reflection",
     "last_debrief",
+    "last_reflection",
+    "last_session_summary",
+    "recent_messages",
   ],
   outputFile: "reflection.md",
   buildSchema: () => schema,

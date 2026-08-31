@@ -11,12 +11,15 @@ import type { ContextBlock } from "./types.ts";
  * stronger signal than anything available in the transcript, and `reflect` is
  * the only step positioned to see it.
  *
- * Empty is the common and correct case. A correction invented where none was
- * warranted would steer this session's restatement away from a reading that was
- * right — the same compounding failure `no_signal` exists to prevent.
+ * Absent is the common and correct case — and now genuinely absent rather than a
+ * sentence announcing that no correction was made, which was one more thing for
+ * a small model to weigh.
  */
 export const requestCorrection: ContextBlock = {
   name: "request_correction",
-  resolve: ({ requestCorrection }) =>
-    requestCorrection?.trim() || "(no correction — the previous reading was not challenged)",
+  heading: {
+    agent: "A correction to that reading, recorded after seeing the reply land",
+    observer: "A correction recorded against that reading",
+  },
+  resolve: ({ requestCorrection }) => requestCorrection?.trim() || undefined,
 };

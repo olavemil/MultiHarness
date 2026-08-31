@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { DatabaseSync } from "node:sqlite";
 import type { Config } from "../config/schema.ts";
 import { callModel } from "../model/call.ts";
-import { resolveStepModel } from "../model/roles.ts";
+import { hostFor, resolveStepModel } from "../model/roles.ts";
 import { loadPrompt } from "../prompts/load.ts";
 import { render } from "../prompts/render.ts";
 import { embedText, nearest, type Neighbour } from "./similarity.ts";
@@ -80,7 +80,7 @@ export async function writeKnowledge(opts: WriteOptions): Promise<GatekeeperResu
 
   const result = await callModel({
     label: STEP_NAME,
-    host: config.ollama.host,
+    host: hostFor(config, model.role),
     role: model.role,
     prompt: rendered,
     schema: buildSchema(topics),

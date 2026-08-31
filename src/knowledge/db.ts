@@ -64,9 +64,16 @@ CREATE TABLE IF NOT EXISTS rejections (
 );
 `;
 
-/** Knowledge and identity entries never share a namespace. */
+/** Knowledge, identity, and curiosity entries never share a namespace. */
 export const KNOWLEDGE = "knowledge";
 export const IDENTITY = "identity";
+/**
+ * What the agent noticed it does not know. The absence of knowledge rather than
+ * knowledge, which is why it is a namespace of its own and not an entry kind:
+ * the research gatekeeper's shortlist has no business containing open questions,
+ * and a curiosity's whole point is that nothing has answered it.
+ */
+export const CURIOSITY = "curiosity";
 
 /**
  * `CREATE TABLE IF NOT EXISTS` leaves an existing table alone, so a column added
@@ -80,6 +87,23 @@ function migrate(db: DatabaseSync): void {
     db.exec(`ALTER TABLE contents ADD COLUMN superseded_by INTEGER REFERENCES contents(id)`);
   }
 
+  // Curiosities need two things a knowledge entry does not: somewhere to go
+  // when they are answered or abandoned, and the channel they came from — a
+  // plan is per-channel, so a curiosity that escalates into one has to know
+  // where it belongs.
+  //
+  // **Closing is the load-bearing half.** A curiosity nothing can close is a
+  // standing instruction the agent cannot escape, read into every idle period
+  // for ever. Exactly the lesson `plan` paid for.
+  const entryColumns = db.prepare(`PRAGMA table_info(entries)`).all() as { name: string }[];
+  if (!entryColumns.some((c) => c.name === "closed_at")) {
+    db.exec(`ALTER TABLE entries ADD COLUMN closed_at TEXT`);
+    db.exec(`ALTER TABLE entries ADD COLUMN closed_reason TEXT`);
+  }
+  if (!entryColumns.some((c) => c.name === "origin_channel")) {
+    db.exec(`ALTER TABLE entries ADD COLUMN origin_channel TEXT`);
+  }
+
   // Created here rather than in SCHEMA, and that is the whole point. An index
   // over `superseded_by` sitting in the schema block runs *before* this
   // function, and on an existing store the CREATE TABLE above it is a no-op —
@@ -87,6 +111,9 @@ function migrate(db: DatabaseSync): void {
   // migration that would have added it could run. Anything touching a migrated
   // column belongs after the migration, not beside the table it extends.
   db.exec(`CREATE INDEX IF NOT EXISTS contents_live ON contents (entry_id, superseded_by)`);
+  // Same rule as above: an index over a migrated column belongs after the
+  // migration, never beside the table it extends.
+  db.exec(`CREATE INDEX IF NOT EXISTS entries_open ON entries (namespace, closed_at)`);
 }
 
 export function openKnowledgeDb(knowledgeDir: string): DatabaseSync {

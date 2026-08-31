@@ -17,7 +17,19 @@ export interface InstanceRef {
   home: string;
 }
 
-export const instanceRoot = (): string => path.join(homedir(), ".multiharness");
+/**
+ * Where the agents live.
+ *
+ * `MULTIHARNESS_ROOT` names the whole *set*; `MULTIHARNESS_HOME` names exactly
+ * one and still wins, because the two answer different questions. The root
+ * exists for the container, where `$HOME` is whatever the image says and a
+ * numeric non-root user can resolve `homedir()` to `/` — so a mount path has to
+ * be stated rather than inferred.
+ */
+export const instanceRoot = (): string => {
+  const configured = process.env["MULTIHARNESS_ROOT"];
+  return configured ? path.resolve(expandHome(configured)) : path.join(homedir(), ".multiharness");
+};
 
 export function expandHome(target: string): string {
   if (target === "~") return homedir();

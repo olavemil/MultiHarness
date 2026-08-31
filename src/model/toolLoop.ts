@@ -1,6 +1,7 @@
 import { z } from "zod";
-import { chat, type ChatMessage, type ToolSpec } from "./ollama.ts";
-import type { ResolvedRole } from "./roles.ts";
+import type { ChatMessage, ToolSpec } from "./transport.ts";
+import { withModelLease } from "./lease.ts";
+import { chatFor, type ResolvedRole } from "./roles.ts";
 import type { AnyTool, ToolCallRecord, ToolContext } from "../tools/types.ts";
 
 /**
@@ -20,6 +21,10 @@ export interface ToolLoopResult {
   transcript: string;
   /** True when the iteration cap stopped the loop rather than the model. */
   exhausted: boolean;
+  /** Total time spent queued for an exclusive model. Excluded from the session budget. */
+  waitedMs: number;
+  /** Total time spent executing tools between model turns. */
+  toolMs: number;
 }
 
 export interface ToolLoopRequest {
@@ -29,6 +34,15 @@ export interface ToolLoopRequest {
   prompt: string;
   tools: readonly AnyTool[];
   context: ToolContext;
+  /**
+   * Budget for the **whole loop**, not for each call inside it.
+   *
+   * It used to be per call, so a step configured at 600s could legitimately run
+   * for an hour across six iterations — inside a session whose entire wallclock
+   * budget was fifteen minutes. Seen live: `reason` at 1415s and `research` at
+   * 546s in one session, which starved every other call on the machine and left
+   * the following steps clamped to the dregs of the budget.
+   */
   timeoutMs: number;
   maxIterations?: number;
   signal?: AbortSignal | undefined;
@@ -44,45 +58,82 @@ export const toolSpec = (tool: AnyTool): ToolSpec => ({
 });
 
 export async function runToolLoop(req: ToolLoopRequest): Promise<ToolLoopResult> {
-  const maxIterations = req.maxIterations ?? 6;
+  const maxIterations = req.maxIterations ?? 16;
   const byName = new Map(req.tools.map((tool) => [tool.name, tool]));
   const specs = req.tools.map(toolSpec);
 
   const messages: ChatMessage[] = [{ role: "user", content: req.prompt }];
   const calls: ToolCallRecord[] = [];
+  let waitedMs = 0;
+  let toolMs = 0;
+
+  // Wall-clock deadline for the loop as a whole. Time not spent running model
+  // inference is added back as it accrues: waiting for the lease and executing
+  // tools are not this step's model-runtime budget.
+  const startedAt = Date.now();
+  const remaining = () => req.timeoutMs - (Date.now() - startedAt - waitedMs - toolMs);
 
   for (let iteration = 0; iteration < maxIterations; iteration++) {
-    const response = await chat(
-      req.host,
-      {
-        model: req.role.model,
-        messages: [...messages],
-        tools: specs,
-        options: req.role.options,
-        ...(req.role.keepAlive !== undefined ? { keepAlive: req.role.keepAlive } : {}),
-        ...(req.role.think !== undefined ? { think: req.role.think } : {}),
-      },
-      { timeoutMs: req.timeoutMs, signal: req.signal },
-    );
+    const left = remaining();
+    if (left <= 0) {
+      console.warn(
+        `[tools:${req.label}] out of time after ${iteration} iteration(s); ` +
+          `continuing with what it gathered.`,
+      );
+      return { calls, transcript: renderTranscript(calls), exhausted: true, waitedMs, toolMs };
+    }
+
+    const request = {
+      model: req.role.model,
+      messages: [...messages],
+      tools: specs,
+      options: req.role.options,
+      ...(req.role.keepAlive !== undefined ? { keepAlive: req.role.keepAlive } : {}),
+      ...(req.role.think !== undefined ? { think: req.role.think } : {}),
+    };
+    const invoke = () => chatFor(req.role)(req.host, request, { timeoutMs: left, signal: req.signal });
+
+    // Leased **per iteration**, not around the whole loop. Each iteration is one
+    // call on the weights, which is what the lease is about; the tool execution
+    // between them is sqlite and HTTP, and holding the large model through it
+    // would block every other channel and instance on work that is not using it.
+    //
+    // This was missed when the lease was built, and the miss mattered more than
+    // anywhere else it could have: `research` and `reason` are the two steps the
+    // lease exists for, and they ran their loops entirely unleased while the
+    // cheap final call took it dutifully.
+    const leased = req.role.exclusive
+      ? await withModelLease(req.role.model, invoke, req.signal)
+      : { value: await invoke(), waitedMs: 0 };
+    waitedMs += leased.waitedMs;
+    const response = leased.value;
 
     if (response.toolCalls.length === 0) {
       // The model answered instead of calling anything; the loop is done.
       if (response.content.trim() !== "") {
-        messages.push({ role: "agent", content: response.content });
+        messages.push({ role: "assistant", content: response.content });
       }
-      return { calls, transcript: renderTranscript(calls), exhausted: false };
+      return { calls, transcript: renderTranscript(calls), exhausted: false, waitedMs, toolMs };
     }
 
     messages.push({
-      role: "agent",
+      role: "assistant",
       content: response.content,
       tool_calls: response.toolCalls,
     });
 
     for (const call of response.toolCalls) {
       const record = await execute(byName, call.function.name, call.function.arguments, req.context);
+      toolMs += record.durationMs;
       calls.push(record);
-      messages.push({ role: "tool", tool_name: record.name, content: record.result });
+      messages.push({
+        role: "tool",
+        tool_name: record.name,
+        content: record.result,
+        // Only oMLX's chat() ever sets an id; ollama's protocol correlates by
+        // name and turn order instead, so this is simply absent there.
+        ...(call.id !== undefined ? { tool_call_id: call.id } : {}),
+      });
     }
   }
 
@@ -90,7 +141,7 @@ export async function runToolLoop(req: ToolLoopRequest): Promise<ToolLoopResult>
     `[tools:${req.label}] stopped after ${maxIterations} iterations with the model still ` +
       `calling tools; continuing with what it gathered.`,
   );
-  return { calls, transcript: renderTranscript(calls), exhausted: true };
+  return { calls, transcript: renderTranscript(calls), exhausted: true, waitedMs, toolMs };
 }
 
 async function execute(

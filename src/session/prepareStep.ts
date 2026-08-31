@@ -2,6 +2,7 @@ import type { Config } from "../config/schema.ts";
 import { buildContext, type BuiltContext } from "../context/builder.ts";
 import type { BlockInput } from "../context/blocks/index.ts";
 import { computeSituation, type Situation } from "../core/situation.ts";
+import { agentStanding, describeStanding, type Standing } from "../core/standing.ts";
 import { loadPrompt, SITUATIONS_DIR, type LoadedPrompt } from "../prompts/load.ts";
 import { render } from "../prompts/render.ts";
 import type { ModelStep } from "../steps/types.ts";
@@ -17,6 +18,8 @@ import type { ModelStep } from "../steps/types.ts";
 
 export interface PreparedStep {
   prompt: LoadedPrompt;
+  /** Whether the message continues the agent's own subject, when it was measured. */
+  standing?: Standing | undefined;
   /** The situation fragment actually used; `named` when the agent was addressed. */
   fragmentId?: string | undefined;
   fragment: LoadedPrompt | undefined;
@@ -40,6 +43,23 @@ export interface PrepareArgs {
   variant?: string | undefined;
   /** What the session has left to spend, for steps that can queue more work. */
   budgetRemaining?: string | undefined;
+  /**
+   * Whether the reply being written may name anybody, decided in code from
+   * `stance`'s interest and stated to the prompt as settled fact. See
+   * `core/mentionPolicy.ts` for why it is not left to the prompt's judgement.
+   */
+  mentionPolicy?: string | undefined;
+  /** Who an `outreach` is writing to. */
+  target?: string | undefined;
+  /**
+   * Everybody else being written to in the same sitting.
+   *
+   * Without it each message is composed as though it were the only one, so four
+   * people get four variations on one paragraph and one of them is told in
+   * confidence something another is about to hear. A person writing three
+   * messages knows they are writing three.
+   */
+  otherTargets?: readonly string[] | undefined;
 }
 
 export async function prepareModelStep(args: PrepareArgs): Promise<PreparedStep> {
@@ -50,7 +70,24 @@ export async function prepareModelStep(args: PrepareArgs): Promise<PreparedStep>
     rng: args.rng,
     variant: args.variant,
   });
-  const context = await buildContext(step.contextBlocks, blockInput, config);
+
+  // Available to appendix headings, which is why they are computed before the
+  // context rather than merged into it afterwards: "What you know about
+  // ${sender}" has to name somebody.
+  const headingVars = {
+    sender: blockInput.identity.displayName,
+    agent_name: config.agent.name,
+    topic,
+  };
+
+  const context = await buildContext({
+    blocks: step.contextBlocks,
+    appendix: step.appendix,
+    input: blockInput,
+    config,
+    voice: step.voice,
+    headingVars,
+  });
 
   // Being named settles the reply, so the conversational-position fragments do
   // not apply: they all reason about whether an *unaddressed* message is meant
@@ -59,16 +96,25 @@ export async function prepareModelStep(args: PrepareArgs): Promise<PreparedStep>
   // No message means no conversational position to route on: every fragment
   // reasons about where an *arriving message* sits relative to the agent, and a
   // maintenance session has none.
-  const situation =
-    step.situational && mention === undefined && blockInput.message !== undefined
-      ? computeSituation(
-          blockInput.message.text,
-          blockInput.history,
-          config.agent,
-          8,
-          args.replyTarget,
-        )
-      : undefined;
+  const routed =
+    step.situational && mention === undefined && blockInput.message !== undefined;
+
+  // Measured here rather than by the caller, so the eval harness and a live
+  // session cannot diverge on it — the drift this file exists to prevent.
+  const standing = routed
+    ? await agentStanding(config, blockInput.history, blockInput.message!.text)
+    : undefined;
+
+  const situation = routed
+    ? computeSituation(
+        blockInput.message!.text,
+        blockInput.history,
+        config.agent,
+        8,
+        args.replyTarget,
+        standing?.related,
+      )
+    : undefined;
 
   const fragmentId = step.situational ? (situation?.id ?? "named") : undefined;
   const fragment = fragmentId
@@ -85,20 +131,45 @@ export async function prepareModelStep(args: PrepareArgs): Promise<PreparedStep>
     topic,
     agent_name: config.agent.name,
     agent_aliases: config.agent.aliases.join(", ") || "(none)",
-    // Analyst voice: this feeds `react`, a classification step on the fast
-    // model. Second person there invites the model to read "you" as itself.
-    agent_mentioned: mention
-      ? `Yes — the message names the agent as "${mention}".`
-      : "No — the message does not name the agent.",
+    // Static, from config. The self-revising version — a cross-channel document
+    // the agent edits about itself — is roadmap 4c and inherits the impression
+    // loop's guards; this is the half that costs nothing.
+    agent_persona: config.agent.personality,
+    // Who the step is talking to, or about. Named rather than left to
+    // `incoming_message` to prefix, so a subjective frame can address them and
+    // an appendix heading can say whose file it is.
+    sender: blockInput.identity.displayName,
     mentioned_other: mentionedOther,
     budget_remaining: args.budgetRemaining ?? "Not constrained.",
-    situation: fragment ? render(fragment.text, { mentioned_other: mentionedOther }) : "",
+    target: args.target ?? "",
+    other_targets:
+      args.otherTargets && args.otherTargets.length > 0
+        ? args.otherTargets.join(", ")
+        : "nobody else",
+    mention_policy:
+      args.mentionPolicy ??
+      "@mention somebody only where the reply genuinely needs their attention.",
+    standing: describeStanding(standing),
+    // Fragments get the same universal scalars the frames do. They used to get
+    // only the two they were known to use, so a fragment that grew a `${…}`
+    // failed at render time — the guard working, but at the cost of a dead
+    // session rather than a compile error.
+    situation: fragment
+      ? render(fragment.text, {
+          mentioned_other: mentionedOther,
+          standing: describeStanding(standing),
+          agent_name: config.agent.name,
+          agent_persona: config.agent.personality,
+          sender: blockInput.identity.displayName,
+        })
+      : "",
   };
 
   return {
     prompt,
     fragment,
     situation,
+    standing,
     fragmentId,
     context,
     renderedPrompt: render(prompt.text, variables),

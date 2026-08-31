@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
+import type { Config } from "../src/config/schema.ts";
 import { messageTrigger } from "../src/core/trigger.ts";
 import { callModel } from "../src/model/call.ts";
 import { createDeadline } from "../src/model/deadline.ts";
@@ -14,6 +15,7 @@ import {
   testHistory,
   testIdentity,
   testMessage,
+  entryReplies,
 } from "./helpers/fixtures.ts";
 
 /**
@@ -81,7 +83,7 @@ describe("salvaging a timed-out step", () => {
     return callModel({
       label: "test",
       host: server.host,
-      role: { name: "fast", model: "m", options: {}, noTools: false, exclusive: false },
+      role: { name: "fast", model: "m", backend: "ollama", options: {}, noTools: false, exclusive: false },
       prompt: "p",
       schema,
       fallback: () => ({ reason: "fallback", respond: false }),
@@ -124,7 +126,14 @@ describe("salvaging a timed-out step", () => {
       callModel({
         label: "test",
         host: server.host,
-        role: { name: "fast", model: "qwen3.6:27b", options: {}, noTools: false, exclusive: false },
+        role: {
+          name: "fast",
+          model: "qwen3.6:27b",
+          backend: "ollama",
+          options: {},
+          noTools: false,
+          exclusive: false,
+        },
         prompt: "p",
         schema,
         fallback: () => ({ reason: "fallback", respond: false }),
@@ -135,6 +144,54 @@ describe("salvaging a timed-out step", () => {
 });
 
 describe("a failed step records why, in the session", () => {
+  it("carries on to the next step when one runs out of time", async () => {
+    // A slow `research` used to take the whole session down with it, throwing
+    // away the reply somebody was waiting for. Its partial output survives in
+    // the working file — which is the reason steps stream to one — so the
+    // session can carry on from what it did gather.
+    const { dir, cleanup } = await tempWorkingDir();
+    const server = await mockOllama([
+      ...entryReplies(true).map(reply),
+      // `respond` never finishes: content streams, then the connection hangs
+      // until the deadline fires. Nothing to salvage into the schema.
+      { kind: "content", content: "half an ans", hang: true },
+      reply(JSON.stringify({ assessment: "ok", quality: 3, recommendations: [] })),
+    ]);
+    cleanups.push(cleanup, server.close);
+
+    const base = await testConfig(server.host, dir);
+    const config = {
+      ...base,
+      // `respond` is a necessary step now — see session/budget.ts — so it runs
+      // at its own configured timeout regardless of `ollama.request_timeout_ms`
+      // or the session's remaining wallclock. Controlling it for this test
+      // means overriding it directly, the same way a real deployment would.
+      steps: { ...base.steps, respond: { ...base.steps["respond"], timeout_ms: 700 } },
+    } as Config;
+    const paths = resolvePaths(config.working_dir);
+    await ensurePaths(paths);
+
+    const notes: string[] = [];
+    const result = await runSession({
+      config,
+      paths,
+      trigger: messageTrigger(testMessage()),
+      identity: testIdentity(),
+      history: testHistory(),
+      rng: () => 0,
+      onProgress: (note) => notes.push(note),
+    });
+
+    // The session finished rather than throwing, and said so.
+    expect(notes.some((n) => n.includes("ran out of time"))).toBe(true);
+    // And the closing steps still ran, so the session left a record.
+    expect(result.completed.map((s) => s.name)).toContain("review");
+    // The dead step still sealed its own account of why.
+    const { readFile } = await import("node:fs/promises");
+    const failure = await readFile(path.join(result.session.dir, "failure.md"), "utf8");
+    expect(failure).toContain("respond");
+  });
+
   it("seals failure.md naming the step and the cause", async () => {
     const { dir, cleanup } = await tempWorkingDir();
     // Two 500s: the initial attempt and the retry both fail at transport level,
@@ -171,10 +228,10 @@ describe("a failed step records why, in the session", () => {
 
     const failure = await readFile(path.join(sessionDir, "failure.md"), "utf8");
     expect(failure).toContain("# Session failed");
-    expect(failure).toContain("react");
+    expect(failure).toContain("read");
     expect(failure).toContain("model server exploded");
     // And it points at what the step had managed to write.
-    expect(failure).toContain("react.partial");
+    expect(failure).toContain("read.partial");
   });
 });
 
@@ -192,6 +249,7 @@ describe("absorbed arrivals do not start their own session", () => {
       needs_fact: false,
       needs_thought: false,
       steps: [],
+      reaction: "eyes",
     });
     // An `adjust` verdict queues the `adjust` step and then the reply again, so
     // the exact call count is not the point here — supply enough of the

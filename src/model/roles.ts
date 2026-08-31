@@ -1,10 +1,15 @@
 import type { Config } from "../config/schema.ts";
 import { PLACEHOLDER_MODEL } from "../config/schema.ts";
-import type { OptionValue } from "./ollama.ts";
+import type { OptionValue } from "./transport.ts";
+import { chat as ollamaChat, embed as ollamaEmbed } from "./ollama.ts";
+import { chat as omlxChat, embed as omlxEmbed } from "./omlx.ts";
+
+export type Backend = "ollama" | "omlx";
 
 export interface ResolvedRole {
   name: string;
   model: string;
+  backend: Backend;
   keepAlive?: number | string;
   think?: boolean;
   noTools: boolean;
@@ -40,16 +45,50 @@ export function resolveRole(config: Config, roleName: string): ResolvedRole {
         `or in the file $MULTIHARNESS_CONFIG points at.`,
     );
   }
+  if (role.backend === "omlx" && !config.omlx) {
+    throw new Error(
+      `Model role "${roleName}" is set to backend "omlx", but [omlx] is not configured. ` +
+        `Add an [omlx] table with a host, in config/default.toml or the file ` +
+        `$MULTIHARNESS_CONFIG points at.`,
+    );
+  }
 
   return {
     name: roleName,
     model: role.model,
+    backend: role.backend,
     ...(role.keep_alive !== undefined ? { keepAlive: role.keep_alive } : {}),
     ...(role.think !== undefined ? { think: role.think } : {}),
     noTools: role.no_tools,
     exclusive: role.exclusive,
     options: role.options,
   };
+}
+
+/**
+ * Which module's `chat()`/`embed()` a resolved role's calls go through.
+ * Centralised here rather than duplicated in `call.ts`, `toolLoop.ts`, and
+ * every direct `embed()` caller, so a third backend is one dispatch table to
+ * extend instead of four.
+ */
+export const chatFor = (role: ResolvedRole) => (role.backend === "omlx" ? omlxChat : ollamaChat);
+export const embedFor = (role: ResolvedRole) => (role.backend === "omlx" ? omlxEmbed : ollamaEmbed);
+
+/** The host a resolved role's calls go to, chosen by its `backend`. */
+export function hostFor(config: Config, role: ResolvedRole): string {
+  if (role.backend === "omlx") {
+    // resolveRole already refused to produce an "omlx" role without this
+    // table present, so the assertion here is restating a checked invariant,
+    // not skipping a check.
+    return (config.omlx as NonNullable<Config["omlx"]>).host;
+  }
+  return config.ollama.host;
+}
+
+/** The backend's own default request timeout, absent a per-step override. */
+export function defaultTimeoutFor(config: Config, backend: Backend): number {
+  if (backend === "omlx") return (config.omlx as NonNullable<Config["omlx"]>).request_timeout_ms;
+  return config.ollama.request_timeout_ms;
 }
 
 /**
@@ -80,7 +119,7 @@ export function resolveStepModel(
       options: { ...role.options, ...(stepConfig?.options ?? {}) },
       ...(think !== undefined ? { think } : {}),
     },
-    timeoutMs: stepConfig?.timeout_ms ?? config.ollama.request_timeout_ms,
+    timeoutMs: stepConfig?.timeout_ms ?? defaultTimeoutFor(config, role.backend),
     tools,
   };
 }

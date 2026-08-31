@@ -13,6 +13,7 @@ import {
   testHistory,
   testIdentity,
   testMessage,
+  entryReplies,
 } from "./helpers/fixtures.ts";
 
 /**
@@ -355,11 +356,10 @@ describe("a continuation session", () => {
   it("does not become the session reflect reflects on", async () => {
     // A continuation has no exchange in it. Letting it claim the pointer would
     // have the next real session asking how the last answer landed.
-    const REACTION = JSON.stringify({ reason: "asked me", verdict: "reply", interest: 0.9 });
-    const RESPONSE = JSON.stringify({ message: "Right." });
+        const RESPONSE = JSON.stringify({ message: "Right." });
     const REVIEW = JSON.stringify({ assessment: "ok", quality: 4, recommendations: [] });
     const { config, paths } = await harness([
-      reply(REACTION),
+      ...entryReplies(true).map(reply),
       reply(RESPONSE),
       reply(REVIEW),
       reply(THOUGHTS),

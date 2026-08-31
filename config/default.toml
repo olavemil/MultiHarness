@@ -11,9 +11,25 @@ working_dir = "~/.multiharness"
 [agent]
 name = "harness"
 aliases = ["@harness"]
+# Rendered into the frame of every subjective step: "You are harness,
+# ${personality}." A phrase rather than a paragraph — it sits inside a sentence,
+# and it is paid for on every reasoning call in the session.
+#
+# This is what makes the subjective frames say something instead of merely
+# addressing the model by name. Per instance: an agent's character belongs in
+# its own config.toml, not in the repo default.
+personality = "a careful, direct participant who says what it actually thinks and keeps replies short"
 
 [ollama]
 host = "http://127.0.0.1:11434"
+request_timeout_ms = 300000
+
+# oMLX (github.com/jundot/omlx), an Apple-Silicon-only inference server with an
+# OpenAI-compatible API rather than ollama's. `[roles.*] backend` currently
+# defaults to "omlx" (see schema.ts), so every role below is routed here unless
+# it says `backend = "ollama"` explicitly.
+[omlx]
+host = "http://127.0.0.1:8000"
 request_timeout_ms = 300000
 
 # --- Model roles -------------------------------------------------------------
@@ -30,7 +46,7 @@ request_timeout_ms = 300000
 # phi3.5 remains pulled and is the right choice if this role ever moves to work
 # that is genuinely mechanical rather than a judgement call.
 [roles.fast]
-model = "phi4:latest"
+model = "mlx-community/Qwen3-4B-Instruct-2507-8bit"
 keep_alive = -1
 # Deliberately not exclusive. `update` runs *alongside* the step it supervises,
 # so serialising this role would have the supervisor wait for the thing it is
@@ -44,7 +60,7 @@ num_ctx = 8192
 # ceiling alongside fast and embed, and letting it unload costs ~60s of reload
 # on the first reasoning step of every cold session.
 [roles.reasoning]
-model = "qwen3.6:27b"
+model = "scottlowry/Qwen3.8-27B-oQ4e-mtp"
 keep_alive = -1
 # One call at a time on these weights. Two sessions reaching a reasoning step
 # together do not get two models — ollama queues them behind each other — so
@@ -64,7 +80,7 @@ num_ctx = 16384
 # prompt. Re-splitting this to a dedicated model later is a change to this table
 # alone.
 [roles.digest]
-model = "qwen3.6:27b"
+model = "scottlowry/qwen3.8-27B-OQ4E-mtp"
 think = false
 no_tools = true
 # Same weights as `reasoning`, so the same queue — see above.
@@ -77,8 +93,18 @@ num_ctx = 16384
 # resident for well under a gigabyte; qwen3-embedding:4b (2.5 GB) is available
 # if retrieval quality turns out to matter more than the memory.
 [roles.embed]
-model = "qwen3-embedding:0.6b"
+model = "mlx-community/Qwen3-Embedding-0.6B-4bit-DWQ"
 keep_alive = -1
+# 639 MB on disk, and it loaded at **5.8 GB** resident before this line existed:
+# the default context is 32768 and the KV cache is included in residency, as it
+# is for every role here. That went unnoticed while the role was unused, and
+# became real the moment `core/standing.ts` put it on the reply path — it is
+# what left no headroom for a third model beside phi4 and the 27B.
+#
+# Inputs are one chat message or one knowledge candidate, so the window only has
+# to cover the longest single string, never their sum.
+[roles.embed.options]
+num_ctx = 2048
 
 # --- Context -----------------------------------------------------------------
 # Budgets are per named block, in approximate tokens. They exist for answer
@@ -113,12 +139,13 @@ request = 500
 
 [session]
 reflect_step = "reflect"
-entry_step = "react"
+read_step = "read"
+stance_step = "stance"
 # Optional preparatory steps react may choose between.
 #
 # Choosing between these is `plan`'s job, not react's — so a named message
 # still skips the react call entirely and goes straight to structuring.
-selectable_steps = ["research", "reason", "draft", "plan"]
+selectable_steps = ["research", "reason", "draft", "plan", "initiate"]
 # Restates the incoming message as a self-contained request before anything acts
 # on it. "Could you draft a plan for this?" gives a step a pronoun with no
 # referent; recent_messages is a transcript rather than a brief, so every step
@@ -154,32 +181,55 @@ max_wallclock_ms = 900000
 # Counting calls bounds what `plan` actually controls.
 max_model_calls = 24
 max_tool_calls = 24
-# Route situations on "which message is this replying to?" rather than on how
-# many messages back the agent last spoke.
+# Which earlier message is this one answering? Folded into `read`, so it costs
+# no separate call — the entry path is two fast calls either way.
 #
-# On, on evidence. `late-reply-to-agent` — someone answering the agent after two
-# other people have talked — scores 5/5 with this on and 3/5 with it off, at
-# n=5. Distance routes that to `none_recent`; the reply target routes it to
-# `none_immediate`, which is what it actually is. That pattern is common in a
-# real channel.
-#
-# It costs a second fast call, taking the react decision from ~2.7s to ~5s. One
-# case at n=5 is suggestive rather than conclusive; re-measure if the latency
-# starts to matter.
-reply_target = true
+# It routes: `late-reply-to-agent` — somebody answering the agent after two other
+# people have talked — is `none_recent` by distance and `none_immediate` by reply
+# target, and the second is what it actually is. That pattern is common in a real
+# channel.
 # Impressions of a person accumulate one exchange at a time and are synthesised
 # into their summary every N of them. Lower is more responsive and more prone to
 # mistaking one exchange for a pattern.
 impression_threshold = 5
-# What the agent marks a message with when `react` decides an acknowledgement is
-# wanted and a written reply is not — "thanks", a decision reported, anything
-# addressed to it that wants nothing back.
+# How much the agent must have to add before it speaks up when nothing was asked
+# of anybody. `stance` scores that 0..1, where 0.5 is "could say something
+# relevant, but nobody would miss it".
+#
+# **This is the mention-loop fix.** Two instances in a channel named each other
+# in messages that asked nothing — "@nephele good point" — and being named
+# bypasses every damping term there is: the probability is forced to 1.0 and no
+# draw is taken. Each was compelled to answer an acknowledgement, and each
+# answer named the other.
+#
+# Below this threshold: a message that asked nothing gets an acknowledgement
+# rather than a written reply, and a reply that *is* written may not name
+# anybody. A question is still answered whatever this says — letting a low score
+# silence a direct question is the failure mention detection exists to prevent.
+#
+# 0.3 is a first guess, not a measurement. Raise it to make an agent quieter in
+# exchanges it was only mentioned in passing in; 0 restores the old behaviour.
+min_interest = 0.3
+# What the agent marks a message with when an acknowledgement is wanted and a
+# written reply is not — "thanks", a decision reported, anything addressed to it
+# that wants nothing back.
 #
 # Silence is the worst outcome, especially one-to-one where it is
-# indistinguishable from the daemon being down. Fixed rather than model-chosen:
-# predictable, never embarrassing in front of a channel, and no extra call.
-# Needs the `reactions:write` scope on Slack. Empty means stay silent.
+# indistinguishable from the daemon being down. Needs the `reactions:write`
+# scope on Slack. Empty means stay silent.
+#
+# This is the **fallback** now: the vocabulary below is what the agent picks
+# from, and this is where a parse failure or an unrecognised choice lands. Keep
+# it to something that is never wrong.
 acknowledge_emoji = "+1"
+# Marked on the message while preparatory work runs, when `schedule` names
+# nothing better. Empty leaves it unmarked.
+#
+# The reply stops being immediate the moment any step is scheduled — research
+# and reason run on the 27B for tens of seconds to minutes — and the person saw
+# nothing at all in that window. A person who is about to go away and think puts
+# an emoji on the message first, then comes back with the answer.
+working_emoji = "eyes"
 
 # --- Continued work ----------------------------------------------------------
 # After a reply goes out, carry on with whatever the plan still has outstanding.
@@ -195,6 +245,183 @@ acknowledge_emoji = "+1"
 #
 # `respond` is refused here whatever `steps` says. A continuation reports by
 # closing the plan, and its `changed` line is the report.
+
+# Standing: does an arriving message continue a subject the agent has itself
+# spoken on? Distinct from being addressed, and it is what a silent-but-present
+# agent needs in order to join a conversation it contributed to earlier.
+#
+# Settled in code because a model could not settle it. Decoded as a boolean on
+# `fast` it scored 0/3; a 27B scored 3/3 at ~82s against ~2.7s, on the entry step
+# of every message. A cosine similarity against the agent's own recent turns is
+# a fact the harness can establish outright, the way mention detection is.
+#
+# First use of the `embed` role outside the knowledge gatekeeper. `threshold` is
+# calibrated against eval/cases/react.json rather than chosen by taste; raising
+# it makes the agent join fewer conversations, lowering it makes it join more.
+
+# One session at a time across the whole daemon, granted FIFO and held for the
+# whole session.
+#
+# `model/lease.ts` already serialises calls on the same model id; this is the
+# case it cannot reach — two agents, one GPU, different models. Measured: `react`
+# on phi4 runs 1.08s idle and 19-27s while the other instance holds a 27B step,
+# and it blew its 30s timeout twice.
+#
+# The cost, stated plainly: two channels in one instance no longer run
+# concurrently either. A long `research` in one channel delays a reply in
+# another by up to a session. That is the trade for one GPU.
+#
+# Raising `size` brings the contention back in exchange for throughput.
+
+# --- What the agent may mark a message with ---------------------------------
+# Emoji name (no colons) to the situation it fits. Compiled into `stance`'s
+# schema, so the model cannot emit one that is not here.
+#
+# **The point of a vocabulary rather than one fixed emoji** is that
+# acknowledging became common: since a bare mention derives to `acknowledge`
+# rather than a forced reply, thumbs-up is now the agent's answer to thanks, to
+# jokes, to good news, and to being agreed with — four different things wearing
+# one face.
+#
+# Keep the list short and each entry distinct. A model choosing between options
+# needs each to name a situation the others do not cover; this is the same
+# failure `schedule` has, where `research`, `reason`, and `draft` are described
+# clearly and still not discriminated between.
+#
+# Only names every workspace has. A missing emoji makes Slack return
+# `invalid_name`, which is caught and logged rather than fatal, but it means the
+# acknowledgement silently never lands. Add your own custom emoji here with the
+# situation they fit and they work immediately.
+#
+# **No `-1`, deliberately.** An agent thumbs-downing a person in front of a
+# channel is exactly the "embarrassing" case that kept this fixed for so long.
+# `thinking_face` carries "not convinced" without the sting.
+[session.acknowledgements]
+"+1" = "you agree, or you have simply read it and nothing more is needed"
+"eyes" = "you have seen it and will look at it properly, but not yet"
+"white_check_mark" = "it is done, or what they said is confirmed correct"
+"pray" = "thanks — they did something for you, or told you something useful"
+"tada" = "good news worth marking"
+"thinking_face" = "noted, but you are not convinced, or it needs more thought"
+"smile" = "it was a joke, or meant lightly"
+"wave" = "hello, or goodbye"
+
+# --- What the agent wants ----------------------------------------------------
+# The only thing here that makes the agent want anything. Everything else is
+# reactive: a message arrives, a session runs, and it stops.
+#
+# **The raw material already existed and was thrown away.** `research` reports
+# `gaps` — "anything you could not establish that would have changed the answer"
+# — `reason` reports `uncertainties`, and `debrief` reports what a session was
+# asked and never answered. All three were sealed into step output, read by
+# `respond` in the same session, and never seen again. The agent noticed what it
+# did not know, said so, and forgot within seconds.
+#
+# They are harvested now into a cross-channel store, merged by embedding so the
+# same question asked twice is one question that has come up twice. When a
+# channel goes quiet, an idle session picks the most persistent one and goes and
+# works on it — which is what writes to the knowledge store and the agent's own
+# files without anybody asking.
+#
+# The third cross-channel loop, after knowledge and impressions, and it inherits
+# their warning: **a mistake here does not expire.** Hence append-only, an
+# explicit close, and `prune` — a step whose entire job is dropping things.
+[session.curiosity]
+enabled = true
+# Cosine above which two phrasings are one question. Same hazard as
+# [session.standing] threshold: absolute cosine on short strings clusters well
+# below 1, so this band is specific to qwen3-embedding and wants re-measuring if
+# the embed role changes. Unmeasured — 0.6 is a starting point, not a finding.
+merge_threshold = 0.6
+# How often a question must have come up before idle time is spent on it. 1
+# pursues everything ever noticed, which is mostly noise.
+pursue_after = 2
+# Recurrences after which pursuing has evidently not settled it, and it becomes a
+# plan in the channel it came from — where continuation carries it across
+# sessions. Well above pursue_after on purpose: a plan is a commitment later
+# sessions act on unprompted, so something must keep coming back *and* survive
+# being looked into before it earns one.
+escalate_after = 4
+max_open = 12
+
+# --- Speaking first ----------------------------------------------------------
+# Whether the agent may start a conversation nobody asked it to. The only thing
+# in the harness that writes to a channel unprompted, and the one most likely to
+# be regretted — so every bound here is countable and enforced in
+# `core/initiative.ts`, never in a prompt a model can reason its way around.
+#
+# The step is only ever shown channels that already passed these; it is asked
+# "is any of this worth saying?", never "is it a reasonable hour?".
+#
+# On, because a feature that is off is a feature nobody finds the bugs in — but
+# these are the numbers to turn down first if it becomes a nuisance, and
+# `enabled = false` stops it dead.
+[session.initiative]
+enabled = true
+# **A ladder rather than one cutoff**, because how much silence excuses speaking
+# depends on who has been doing the talking. A flat threshold does both things
+# wrong: it blocks the agent from picking up a conversation it has a place in,
+# and it lets it monologue into a room where nobody has answered it twice.
+#
+#   quiet longer than free_after_ms   -> allowed outright. Hours have passed;
+#                                        even following its own last message is
+#                                        a fresh start rather than a monologue.
+#   quiet longer than recent_after_ms -> allowed unless the agent sent the last
+#                                        *two*. A third would be three in a row.
+#   sooner than that                  -> allowed only if somebody else spoke
+#                                        last. The conversation is still live.
+#
+# Note what the bottom rung overlaps with: the ordinary reply path already saw
+# that last message and decided not to answer it. This is a second look at the
+# same moment, from a different question — and it only happens at all inside a
+# maintenance session, which needs the channel idle and other work waiting.
+free_after_ms = 21600000
+recent_after_ms = 3600000
+# And this is when a room stops being quiet and starts being over. Two weeks.
+#
+# Easy to leave out and load-bearing: the survey is sorted by silence, so without
+# an upper bound the deadest channel on record is permanently the most eligible
+# one, for ever.
+max_silent_ms = 1209600000
+# Minimum gap between one unprompted message and the next, across *every*
+# channel rather than per channel — otherwise an agent with six rooms opens six
+# conversations at once. Six hours.
+cooldown_ms = 21600000
+# Only rooms it has already taken part in. Starting a conversation somewhere it
+# has never said anything is the worst version of this.
+require_history = true
+# Gap before going back to the *same* channel or person, on top of the global
+# cooldown above. Three days.
+#
+# Without it the agent may open something in one room every time the global
+# cooldown lapses, which reads as pestering even when each message is fine.
+target_cooldown_ms = 259200000
+# Whether it may write to people directly, not just into channels. A DM is more
+# intrusive than a message in a room somebody can ignore, so it is separable.
+#
+# Only people it has an *impression* of — meaning it has formed a view of them
+# across several exchanges, not merely seen them speak once.
+dm_enabled = true
+# How long since somebody last said anything, anywhere, before it stops writing
+# to them. Thirty days.
+#
+# The DM equivalent of max_silent_ms, and the same trap: without it the least
+# active contact on file is permanently the most eligible one, and messaging
+# somebody who left months ago is worse than messaging nobody.
+dm_stale_ms = 2592000000
+
+[session.turn]
+size = 1
+
+[session.standing]
+enabled = true
+# 0.4 is measured, not chosen: across the react suite the cases that need
+# "yes" score 0.419 and 0.480, and those that need "no" score 0.356 and 0.359.
+# A 0.06 margin on four points is thin — re-run eval/cases/react.json before
+# trusting it further, and note the band is specific to this embedding model.
+# Absolute cosine on short messages clusters far below 1; 0.6 marked nothing.
+threshold = 0.4
+turns = 4
 
 [session.continuation]
 enabled = true
@@ -227,24 +454,71 @@ max_iterations = 3
 
 [session.maintenance]
 enabled = true
-idle_ms = 300000
+idle_ms = 30000
+# "reflect" is here for a signal that arrives without anybody speaking: somebody
+# reacts to one of the agent's messages and then the channel goes quiet. It was
+# recorded and read at the start of the next real exchange — which never comes if
+# the reaction *was* the last word, and a channel that falls silent after a 👎 is
+# exactly where knowing about it matters. `reactions_seen.json` per channel is
+# what stops it firing on the same reaction for ever.
+#
+# What it durably leaves is the *impression* — appended to the identity, read
+# across channels. Its recommendations are for a session that has nothing to
+# answer, so they go nowhere, and that is fine: this run exists to notice, not
+# to act.
+#
 # "impression" synthesises a person's summary once enough new observations have
 # accumulated. "compact" merges one knowledge entry that has three or more
 # separate notes under it — the most-appended one, one entry per session, so a
 # bad pass touches a single topic and a backlog clears over several quiet
 # periods. Compaction supersedes rather than deletes: the notes it was built
 # from stay on disk and can be read back with readAllContents.
-steps = ["impression", "compact"]
+#
+# "prune" is the closing half of the curiosity loop, and the half that is easy to
+# leave out: open questions are harvested with no model call and no judgement, so
+# without something whose entire job is dropping them the store fills with loose
+# ends and a question nothing can close becomes permanent. Same lesson `plan`
+# paid for with `fulfilled`/`abandoned`.
+#
+# "ponder" is the agent thinking on its own account, with tools to actually look
+# at what it has: no assigned topic, and its output replaces a cross-channel
+# thinking document rather than being sealed and forgotten. It rides along with
+# whatever else the sweep found rather than gating on its own condition —
+# thinking about your situation is not something that becomes "due", and giving
+# it a threshold would mean inventing a number for how often an agent ought to
+# think.
+#
+# "initiate" is the only step that speaks into a channel nobody prompted. It runs
+# last, and only alongside other work: a sweep that fired for nothing else and
+# then decided to speak would be an agent looking for an excuse. See
+# [session.initiative] for the bounds, which are enforced in code.
+steps = ["reflect", "prune", "impression", "compact", "self_summary", "ponder", "initiate"]
 
 # --- Per-step overrides ------------------------------------------------------
 # Each step declares its own default role; these entries override it.
 
-[steps.react]
+# The objective half of the old `react`: which message is being answered, who it
+# is aimed at, and what it wants back. Absorbs what used to be `reply_target`.
+[steps.read]
+role = "fast"
+timeout_ms = 30000
+
+# The subjective half, and the only step on the entry path written in the agent's
+# own voice. `interest` is a weight for the participation draw, never a verdict —
+# the verdict is derived in code from the reading, this, and the draw.
+[steps.stance]
 role = "fast"
 timeout_ms = 30000
 
 [steps.respond]
 role = "reasoning"
+# No longer clamped to whatever the session's wallclock budget has left — see
+# `executeModelStep` in session/run.ts — so this is a real ceiling rather than
+# a number the clamp usually cut short anyway. Generous because a reply can
+# legitimately run long, but still finite: a step that only ever "thinks" and
+# never emits content should still fail on its own deadline eventually rather
+# than run forever.
+timeout_ms = 600000
 # Read-only knowledge access. On now that `research` writes to the store and
 # `compact` tidies it — the condition this was waiting for.
 #
@@ -270,6 +544,13 @@ role = "fast"
 timeout_ms = 30000
 
 [steps.schedule]
+role = "fast"
+timeout_ms = 30000
+
+# Refreshes the persistent cross-channel self-summary from recent messages,
+# channel activity, and review artifacts. Fast + neutral on purpose: this is
+# context hygiene, not deliberation.
+[steps.self_summary]
 role = "fast"
 timeout_ms = 30000
 
@@ -326,6 +607,55 @@ tools = [
   "session_read",
 ]
 
+# Thinking on its own account, with nobody waiting. Everything internal it can
+# read, and files it can write — the point is that it *looks* at something rather
+# than musing over a context window, which is the shape that produces confident
+# prose about nothing. No web: this is taking stock, not gathering.
+#
+# Thinking stays on. It runs in idle time, so the wallclock it costs is the one
+# thing here that nobody is paying for.
+[steps.ponder]
+role = "reasoning"
+timeout_ms = 600000
+tools = [
+  "knowledge_search",
+  "knowledge_read",
+  "file_list",
+  "file_read",
+  "file_write",
+  "session_list",
+  "session_read",
+]
+
+# Deciding whether to say something nobody asked for. Read-only and no web:
+# deciding is not a research task, and a step that could go and look would turn a
+# quiet moment into a slow one for no gain. `session_read` is what lets it check
+# what a channel was actually about — that channel's own latest `request.md`.
+[steps.initiate]
+role = "reasoning"
+timeout_ms = 300000
+tools = [
+  "knowledge_search",
+  "knowledge_read",
+  "session_list",
+  "session_read",
+  "file_list",
+  "file_read",
+]
+
+# Writing one unprompted message, to one target. No tools: `initiate` already
+# investigated before deciding, and this step is handed the target's own context
+# directly — their summary, that channel's transcript, its last restatement.
+[steps.outreach]
+role = "reasoning"
+timeout_ms = 300000
+tools = []
+
+# Closing an open question is a retrospective judgement against clear criteria,
+# which is the shape `digest` has always been reliable at.
+[steps.prune]
+role = "digest"
+
 [steps.research]
 role = "reasoning"
 # Thinking stays on here: this is the step it exists for. Generous timeout — a
@@ -354,10 +684,6 @@ role = "fast"
 timeout_ms = 30000
 
 [steps.knowledge_gatekeeper]
-role = "fast"
-timeout_ms = 30000
-
-[steps.reply_target]
 role = "fast"
 timeout_ms = 30000
 
@@ -418,15 +744,41 @@ thread_mode = "separate"
 
 [session.participation]
 enabled = true
-base = 0.3
+# 1.0 means the weights *are* the probability, which is the calibration the rest
+# of this block is built around:
+#
+#   every measurement at its midpoint  -> 50% chance of replying
+#   agent has been too talkative       -> proportionally below that
+#   agent is interested                -> proportionally above
+#
+# Turn this down to make an agent quieter everywhere without disturbing the
+# balance between the weights; that is the one knob that scales cleanly.
+base = 1.0
 mention = 1.0
-followup_multiplier = 2.5
-model_yes_multiplier = 1.5
-model_no_multiplier = 0.5
+# Not a multiplier: a direct follow-up enters the average as this many
+# pseudo-observations of 1.0, pulling the coefficient toward neutral. Larger
+# pulls harder, and nothing can push it past 1. The intent is rescue rather
+# than reward — somebody has just spoken to the agent, so the room terms that
+# were suppressing it should stop mattering so much.
+followup_weight = 2.5
+# Applied when the arriving message continues a subject the agent has itself
+# spoken on — the same `core/standing.ts` measurement that routes `react` to its
+# own-subject fragment, reused as a probability rather than only a prompt.
+#
+# Raised because a four-person channel showed the gap: `crowd = 2/participants`
+# halves every probability at four, which is right for chatter and wrong for the
+# thread the agent is actually in. Having standing in a conversation should make
+# it likelier to take part, not just likelier to conclude that it could.
+own_subject_weight = 2.0
+model_yes_weight = 1.0
+# 0..1, so the weight *is* the interest and 0.5 contributes 0.5.
+model_no_weight = 0.0
 presence_window = 12
 participant_window = 24
+# No ceiling: presence damping is 1.0 when the agent has said nothing, 0.5 at
+# exactly its fair share of replies, and falls toward this floor as it talks past
+# that. Staying in 0..1 is what keeps the follow-up pull strictly upward.
 damping_min = 0.25
-damping_max = 2.0
 # Room-size damping, separate from presence damping and doing a job presence
 # damping does not: `fairShare / agentShare` pins to its cap whenever the agent
 # has said little, so without this a near-silent agent in a ten-person room is

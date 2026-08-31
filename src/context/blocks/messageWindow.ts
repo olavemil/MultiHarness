@@ -14,5 +14,10 @@ export const WINDOW_LIMIT = 12;
 export const messageWindow: ContextBlock = {
   name: "message_window",
   keep: "tail",
-  resolve: ({ history }) => renderWindow(windowEntries(history, WINDOW_LIMIT)),
+  heading: {
+    agent: "The conversation so far, with message ids",
+    observer: "Transcript, with an id against each message",
+  },
+  resolve: ({ history }) =>
+    history.length === 0 ? undefined : renderWindow(windowEntries(history, WINDOW_LIMIT)),
 };
