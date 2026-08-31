@@ -10,6 +10,7 @@ import { initiate } from "./initiate.ts";
 import { outreach } from "./outreach.ts";
 import { prune } from "./prune.ts";
 import { schedule } from "./schedule.ts";
+import { selfSummary } from "./selfSummary.ts";
 import { read } from "./read.ts";
 import { stance } from "./stance.ts";
 import { reason } from "./reason.ts";
@@ -27,6 +28,7 @@ const ALL: readonly AnyStep[] = [
   stance,
   restate,
   schedule,
+  selfSummary,
   adjust,
   plan,
   research,

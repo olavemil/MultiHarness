@@ -492,7 +492,7 @@ idle_ms = 30000
 # last, and only alongside other work: a sweep that fired for nothing else and
 # then decided to speak would be an agent looking for an excuse. See
 # [session.initiative] for the bounds, which are enforced in code.
-steps = ["reflect", "prune", "impression", "compact", "ponder", "initiate"]
+steps = ["reflect", "prune", "impression", "compact", "self_summary", "ponder", "initiate"]
 
 # --- Per-step overrides ------------------------------------------------------
 # Each step declares its own default role; these entries override it.
@@ -544,6 +544,13 @@ role = "fast"
 timeout_ms = 30000
 
 [steps.schedule]
+role = "fast"
+timeout_ms = 30000
+
+# Refreshes the persistent cross-channel self-summary from recent messages,
+# channel activity, and review artifacts. Fast + neutral on purpose: this is
+# context hygiene, not deliberation.
+[steps.self_summary]
 role = "fast"
 timeout_ms = 30000
 

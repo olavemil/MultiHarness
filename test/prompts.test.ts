@@ -118,6 +118,10 @@ describe("shipped prompts", () => {
       impressions: [{ text: "asked a follow-up about the reasoning" }],
       arrivals: [{ author: "dana", text: "and staging?", verdict: "adjust" }],
       thinking: "Still circling the importer schema; sqlite looks right.",
+      selfSummary:
+        "Across channels, participants currently want concrete follow-through and explicit state tracking; prioritize action over extended framing.",
+      selfSummaryEvidence:
+        "LATEST_MESSAGES\n- 2026-08-20T12:00:00.000Z | #deploys | dana: can you post status\n----------\nLATEST_REVIEWS\n- 000101-2026-08-20T11-50-00Z | #deploys | answer was clear\n----------\nCHANNEL_ACTIVITY\n- #deploys | quiet 15m | 40 msgs seen | 4 since agent last spoke",
       latestMessage: { author: "dana", text: "did we ever settle the schema mapping?" },
       initiativeTargets: [
         {

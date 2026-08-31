@@ -88,7 +88,7 @@ export const stance: ModelStep<Stance> = {
   // mandatory: without either there is nothing to have a stance about.
   contextBlocks: ["incoming_message"],
   situational: true,
-  appendix: ["user_summary", "recent_messages", "reflection"],
+  appendix: ["self_summary", "user_summary", "recent_messages", "reflection"],
   outputFile: "stance.md",
   buildSchema,
 

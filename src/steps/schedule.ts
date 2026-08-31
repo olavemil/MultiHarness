@@ -70,7 +70,7 @@ export const schedule: ModelStep<Schedule> = {
   // was inferred.
   voice: "observer",
   contextBlocks: ["incoming_message"],
-  appendix: ["request", "current_plan", "reflection", "user_summary"],
+  appendix: ["request", "self_summary", "current_plan", "reflection", "user_summary"],
   outputFile: "schedule.md",
   buildSchema,
 

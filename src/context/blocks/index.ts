@@ -14,6 +14,8 @@ import { lastReflection } from "./lastReflection.ts";
 import { lastReview } from "./lastReview.ts";
 import { lastSessionSummary } from "./lastSessionSummary.ts";
 import { reflection } from "./reflection.ts";
+import { selfSummary } from "./selfSummary.ts";
+import { selfSummaryEvidence } from "./selfSummaryEvidence.ts";
 import { messageWindow } from "./messageWindow.ts";
 import { midSessionMessages } from "./midSessionMessages.ts";
 import { maintenanceBatch } from "./maintenanceBatch.ts";
@@ -31,6 +33,8 @@ const ALL: readonly ContextBlock[] = [
   incomingMessage,
   recentMessages,
   request,
+  selfSummary,
+  selfSummaryEvidence,
   maintenanceBatch,
   priorRequest,
   requestCorrection,

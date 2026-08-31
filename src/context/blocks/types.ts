@@ -54,6 +54,10 @@ export interface BlockInput {
    * The agent's current background thinking, cross-channel. Latest revision only.
    */
   thinking?: string | undefined;
+  /** Persistent cross-channel self-summary, latest revision only. */
+  selfSummary?: string | undefined;
+  /** Ordered cross-channel evidence used to refresh `selfSummary`. */
+  selfSummaryEvidence?: string | undefined;
   /**
    * The last thing said in the conversation being written into — or, for a
    * person, the last thing they said anywhere.

@@ -83,7 +83,8 @@ export async function buildContext(args: BuildArgs): Promise<BuiltContext> {
     if (!built) continue;
 
     blocks.push(built);
-    sections.push(`## ${render(block.heading[voice], headingVars)}\n\n${built.text}`);
+    const label = render(block.heading[voice], headingVars);
+    sections.push(`----------\n${label}\n----------\n${built.text}`);
   }
 
   // Appendix blocks are deliberately kept out of `variables`: a template that

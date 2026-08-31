@@ -33,9 +33,27 @@ export const priorStepOutput: ContextBlock = {
 
     return relevant
       .map((step) => {
-        const heading = step.topic ? `### ${step.name} — ${step.topic}` : `### ${step.name}`;
-        return `${heading}\n\n${step.content.trim()}`;
+        const label = step.topic ? `${step.name} (${step.topic})` : step.name;
+        return `${label}: ${summarise(step.content)}`;
       })
-      .join("\n\n");
+      .join("\n");
   },
 };
+
+function summarise(content: string): string {
+  const lines = content
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "" && line !== "```" && !line.startsWith("#") && !line.startsWith("|"));
+
+  const cleaned = (lines[0] ?? "(output produced)")
+    .replace(/^[-*]\s+/, "")
+    .replace(/^\*\*([^*]+)\*\*\s*:?\s*/, "$1: ")
+    .replace(/`/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const MAX = 220;
+  if (cleaned.length <= MAX) return cleaned;
+  return `${cleaned.slice(0, MAX - 1).trimEnd()}…`;
+}

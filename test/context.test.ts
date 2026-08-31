@@ -154,8 +154,9 @@ describe("buildContext", () => {
 
     // The same text, and the only thing separating "this is mine" from "this is
     // material to examine" is the heading over it.
-    expect(own.variables["context"]).toContain("## What you worked out earlier in this session");
-    expect(judged.variables["context"]).toContain("## Working notes produced during the session");
+    expect(own.variables["context"]).toContain("What you worked out earlier in this session");
+    expect(judged.variables["context"]).toContain("Working notes produced during the session");
+    expect(own.variables["context"]).toContain("----------");
     expect(own.variables["context"]).toContain("node 22 ships sqlite");
   });
 
@@ -164,7 +165,7 @@ describe("buildContext", () => {
       appendix: ["user_summary"],
       headingVars: { sender: "dana" },
     });
-    expect(built.variables["context"]).toContain("## What you know about dana");
+    expect(built.variables["context"]).toContain("What you know about dana");
   });
 
   it("keeps appendix order, so priority order is what reaches the model", async () => {

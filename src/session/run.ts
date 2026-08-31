@@ -21,9 +21,15 @@ import { mentionPolicy } from "../core/mentionPolicy.ts";
 import type { InitiativeTarget } from "../core/initiative.ts";
 import { harvestWithTrace, type HarvestEvent } from "./harvest.ts";
 import { loadThinking, writeThinking } from "../store/thinkingStore.ts";
+import {
+  buildSelfSummaryEvidence,
+  loadSelfSummary,
+  writeSelfSummary,
+} from "../store/selfSummaryStore.ts";
 import type { Pondering } from "../steps/ponder.ts";
 import { chosen, type Initiative } from "../steps/initiate.ts";
 import type { Outreach } from "../steps/outreach.ts";
+import type { SelfSummaryRevision } from "../steps/selfSummary.ts";
 import {
   closeCuriosity,
   openCuriosities,
@@ -352,6 +358,10 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
   let curiosities: Curiosity[] = [];
   /** The agent's background thinking, cross-channel. Maintenance sessions only. */
   let thinking = (await loadThinking(paths))?.text;
+  /** The persistent cross-channel self summary, if one is available. */
+  let selfSummary = (await loadSelfSummary(paths))?.text;
+  /** Ordered evidence for refreshing the self summary; loaded lazily. */
+  let selfSummaryEvidence: string | undefined;
   /** Set by `reflect` when the previous session answered the wrong question. */
   let requestCorrection = "";
 
@@ -451,6 +461,8 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
     impressions,
     curiosities,
     thinking,
+    selfSummary,
+    selfSummaryEvidence,
     ...(initiativeTargets ? { initiativeTargets } : {}),
     requestCorrection,
     arrivals,
@@ -657,6 +669,12 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
     // only if this step actually runs.
     if (step.name === "initiate" && initiativeTargets === undefined && opts.loadInitiativeTargets) {
       initiativeTargets = await opts.loadInitiativeTargets();
+    }
+
+    // Loaded only when needed. A normal message session often never runs this
+    // step, and scanning cross-channel history would be pure overhead there.
+    if (step.name === "self_summary" && selfSummaryEvidence === undefined) {
+      selfSummaryEvidence = await buildSelfSummaryEvidence(paths, config.agent.name);
     }
 
     // **An `outreach` sees its own target, not the session's channel.** The
@@ -1210,6 +1228,12 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
           synthesisedAt: impressionCount(knowledgeDb(), identity.id),
         });
       }
+    }
+
+    if (step.name === "self_summary") {
+      const { summary } = outcome.value as SelfSummaryRevision;
+      const written = await writeSelfSummary(paths, summary, session.id);
+      selfSummary = written.text;
     }
 
     // Closing steps go on once every other step has been queued, and are the

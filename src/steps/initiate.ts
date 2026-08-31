@@ -77,6 +77,7 @@ export const initiate: ModelStep<Initiative> = {
   contextBlocks: ["initiative_targets"],
   appendix: [
     "maintenance_batch",
+    "self_summary",
     "background_thinking",
     "open_curiosities",
     "current_plan",
