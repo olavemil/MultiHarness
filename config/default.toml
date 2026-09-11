@@ -6,6 +6,19 @@
 
 working_dir = "~/.multiharness"
 
+# Run this instance's sessions on the v2 composition pipeline (src/v2/).
+#
+# The one flag deliberately shipped *off*, against the standing "everything
+# ships enabled" rule. That rule exists so features get exercised; here the
+# purpose is running v1 and v2 side by side on live traffic, and defaulting it
+# on would leave nothing to compare against.
+#
+# Per instance: put `v2 = true` in an instance's own config.toml. It must sit
+# above the first [table] header there, like this one — a key written after a
+# table header belongs to that table, which is how six [session] keys once went
+# silently missing.
+v2 = false
+
 # Who the agent is. Without this, no step can distinguish a message addressed to
 # the agent from one addressed to another participant in the same channel.
 [agent]

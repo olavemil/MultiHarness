@@ -194,6 +194,24 @@ export const Config = z.object({
     budgets: z.record(z.string(), z.number().int().positive()).default({}),
   }),
 
+  /**
+   * Run this instance's sessions on the v2 composition pipeline (`src/v2/`).
+   *
+   * **Per instance, and off in the repo default**, which is the point: two
+   * agents in one daemon can run the two pipelines against the same channels,
+   * so `restate → reflect` can be compared against `reflect → read` on live
+   * traffic rather than argued about. An instance opts in by putting
+   * `v2 = true` in its own `config.toml`.
+   *
+   * This is the one flag that is deliberately *not* on by default, against the
+   * repo's standing "everything ships enabled" rule. That rule exists so
+   * features get exercised; here the whole purpose is running the two side by
+   * side, and defaulting it on would leave nothing to compare against.
+   *
+   * Delete this flag, and `src/v2/`, when the experiment concludes either way.
+   */
+  v2: z.boolean().default(false),
+
   session: z.object({
     /**
      * Opens the session by judging how the previous one landed. Queued only

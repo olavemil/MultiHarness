@@ -1,8 +1,22 @@
 # v2 — a composition experiment
 
 **Not a rewrite, and not a migration.** A parallel folder for experimenting with how steps are
-composed, without having to adapt the pieces to a moving v1 at the same time. v1 is untouched:
-nothing here is imported by `src/daemon.ts`, and `npm test` covers both.
+composed, without having to adapt the pieces to a moving v1 at the same time.
+
+**Opt in per instance** by putting `v2 = true` at the top of an instance's own `config.toml`,
+above the first `[table]` header. It ships off. Two agents in one daemon can then run the two
+pipelines against the same channels, which is what turns `restate → reflect` from an argument
+into a measurement.
+
+```toml
+# ~/.multiharness/galatea/config.toml
+v2 = true
+```
+
+The seam is one `if` in `session/run.ts` plus `bridge.ts`, so turning the experiment off is
+deleting a folder rather than unpicking a change threaded through the runner. A v2 session seals
+into the same session directory, through the same `sealStep`, and returns the same
+`SessionResult` — the daemon does not know which pipeline ran.
 
 The underlying primitives are meant to be reused as they stand — `model/transport.ts`,
 `model/call.ts`, `knowledge/`, `store/`, `adapters/`. What is being re-composed is the layer
@@ -118,20 +132,27 @@ failures look like. Swapping two steps is moving two lines.
 | `steps/input.ts` | `StepInput` — typed values, not pre-rendered markdown |
 | `steps/restate.ts`, `steps/reflect.ts` | two steps in the new style |
 | `pipeline.ts` | the ordered message pipeline |
-| `../../test/v2compose.test.ts` | 18 tests over all of the above |
+| `run.ts` | the session loop — reuses v1's `callModel` and role table |
+| `bridge.ts` | adapts v1's session values into `StepInput` |
+| `../../test/v2compose.test.ts` | 18 tests over composition |
+| `../../test/v2flag.test.ts` | 6 tests that the flag routes and v1 is unaffected |
 
 ## Status
 
-Typechecks under `erasableSyntaxOnly`; 18 tests pass; v1 unchanged.
+Typechecks under `erasableSyntaxOnly`; 24 tests pass across `v2compose` and `v2flag`; v1's own
+behaviour is unchanged, asserted by a test that the v1 ordering still holds with the flag off.
 
 **Not built yet**, deliberately — these are the parts that should reuse v1 rather than be
 reinvented, and they only need writing once the composition above is settled:
 
-- A runner. `model/call.ts` and `model/toolLoop.ts` already do the work; what is missing is the
-  loop that walks `onMessage`, calls `apply`, and seals output.
-- Per-section token budgets. v1 has them per named block; the positional equivalent is untested
-  and is the one thing the array might make harder rather than easier.
-- The other nineteen steps.
+- **`respond`.** The pipeline is `restate` and `reflect`, so a v2 session composes prompts and
+  sends no reply. An instance on `v2 = true` is therefore a prompt-composition comparison, not a
+  conversational agent — do not point one at a channel where somebody is waiting for an answer.
+- **Maintenance and continuation triggers.** The flag routes message sessions only; those still
+  run v1, because silently doing nothing on them would look like a wedged daemon.
+- **Per-section token budgets.** v1 has them per named block; the positional equivalent is
+  untested and is the one thing the array might make harder rather than easier.
+- **Tool loops**, `Effects.knowledge` and `Effects.requeue`, and the other nineteen steps.
 
 **The measurement that matters** is whether `restate → reflect` fixes the reflect failures. That
 is a live comparison, not a unit test, and it is the reason this folder exists.

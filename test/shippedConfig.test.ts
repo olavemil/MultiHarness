@@ -49,6 +49,21 @@ describe("the shipped configuration", () => {
     expect(session.selectable_steps).toEqual(["research", "reason", "draft", "plan", "initiate"]);
   });
 
+  it("ships the v2 experiment off, and reads it from the file", async () => {
+    const config = await hermetic();
+
+    // The one flag deliberately shipped off, against "everything ships
+    // enabled": the point is running v1 and v2 side by side, and defaulting it
+    // on leaves nothing to compare against.
+    //
+    // Asserted here because it is a *top-level* key, which makes it the exact
+    // shape this suite was written for: written below a [table] header it would
+    // belong to that table, Zod would strip it, and the `false` default would
+    // hide the loss completely.
+    expect(config.v2).toBe(false);
+    expect(Object.keys(config)).toContain("v2");
+  });
+
   it("keeps the sub-tables separate from the keys around them", async () => {
     const { session } = await hermetic();
 
