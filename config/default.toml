@@ -60,7 +60,7 @@ num_ctx = 8192
 # ceiling alongside fast and embed, and letting it unload costs ~60s of reload
 # on the first reasoning step of every cold session.
 [roles.reasoning]
-model = "scottlowry/Qwen3.8-27B-oQ4e-mtp"
+model = "mlx-community/Qwen3.8-27B-Uncensored-OptiQ-4bit"
 keep_alive = -1
 # One call at a time on these weights. Two sessions reaching a reasoning step
 # together do not get two models — ollama queues them behind each other — so
@@ -80,7 +80,7 @@ num_ctx = 16384
 # prompt. Re-splitting this to a dedicated model later is a change to this table
 # alone.
 [roles.digest]
-model = "scottlowry/qwen3.8-27B-OQ4E-mtp"
+model = "mlx-community/Qwen3.8-27B-Uncensored-OptiQ-4bit"
 think = false
 no_tools = true
 # Same weights as `reasoning`, so the same queue — see above.
