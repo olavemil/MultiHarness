@@ -45,3 +45,12 @@ export const StepKind = {
 export type StepKind = (typeof StepKind)[keyof typeof StepKind];
 
 export const ALL_ROLES: readonly ModelRole[] = Object.values(ModelRole);
+
+/**
+ * Work kinds, as a non-empty tuple for `z.enum`.
+ *
+ * Compiled from the same source as the type, so a kind the harness cannot
+ * dispatch is undecodable rather than merely discouraged — the treatment v1
+ * gives `selectable_steps`.
+ */
+export const WORK_KINDS = ["research", "reason", "write", "contact"] as const;

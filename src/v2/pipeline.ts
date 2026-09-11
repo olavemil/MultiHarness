@@ -1,5 +1,7 @@
 import { reflect } from "./steps/reflect.ts";
 import { restate } from "./steps/restate.ts";
+import { scheduleWork } from "./steps/scheduleWork.ts";
+import { doWork } from "./steps/work.ts";
 import type { StepInput } from "./steps/input.ts";
 import type { Step } from "./steps/types.ts";
 
@@ -42,6 +44,37 @@ export const onMessage: readonly Stage<StepInput>[] = [
     // Nothing to reflect on in the first session in a channel.
     when: (i) => i.prior !== undefined,
   },
+  {
+    // Last, so it sees what the exchange concluded. This is the step v1 has no
+    // equivalent of: the agent saying what it wants to do next, rather than the
+    // harness counting until something is due.
+    step: scheduleWork,
+  },
 ];
 
-export const PIPELINES = { onMessage } as const;
+/**
+ * One iteration of background work.
+ *
+ * **A session per item, not a loop inside one session.** The same argument v1
+ * makes for continuations: the session is the unit of budget, tracing, sealed
+ * output and failure, and one that ran for an hour would break all four. It
+ * also makes "stop and answer the door" free — a message session simply gets
+ * to the channel drain first.
+ */
+export const onBackground: readonly Stage<StepInput>[] = [
+  {
+    step: doWork,
+    // Never fires without an item. A background session with nothing to do
+    // opens a directory and spends a reasoning call concluding it had nothing
+    // to do — the failure v1's `pendingMaintenance` exists to prevent.
+    when: (i) => i.currentWork !== undefined,
+  },
+  {
+    // The agent decides what is worth doing next while it still has the last
+    // item in hand. This is what makes the loop self-sustaining rather than
+    // needing a counter somewhere to refill it.
+    step: scheduleWork,
+  },
+];
+
+export const PIPELINES = { onMessage, onBackground } as const;

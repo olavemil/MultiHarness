@@ -73,4 +73,13 @@ export interface Effects {
   requeue(steps: readonly { step: string; topic: string }[]): void;
   /** Record a value later steps in this session read. */
   note(key: string, value: string): void;
+  /**
+   * Propose background work.
+   *
+   * Proposed, not scheduled: the harness merges it into the list, caps attempts
+   * and decides when it runs. A step naming work it then ran itself would be
+   * the one thing this design is trying to avoid — an agent with an unbounded
+   * loop and no accounting.
+   */
+  work(kind: string, task: string): void;
 }

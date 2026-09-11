@@ -810,3 +810,25 @@ crowd_min = 0.2
 # message that named the agent. 0 disables it.
 interject_delay_ms = 4000
 max = 1.0
+
+# v2 background work. Read only when `v2 = true` at the top of this file.
+#
+# The v2 answer to "why does the agent never start anything". v1 discovers
+# background work by counting — impressions past a threshold, entries with three
+# notes, a question resurfaced twice — so nothing anywhere asks the agent what it
+# wants to do. Here a step proposes the work and these two keys bound it.
+#
+# A sub-table, so it sits at the *end* of [session] like the others: a table
+# header ends the previous table's scope, and six plain keys once went silently
+# missing to exactly that.
+[session.background]
+enabled = true
+
+# Attempts before an item is dropped.
+#
+# The closing rule, in its cheapest form. A task list nothing can close becomes a
+# standing instruction the agent cannot escape, which is why `plan` has
+# `fulfilled` and `abandoned`. Generous, because a machine that can afford to sit
+# and think all day should try a hard thing more than once; finite, because it
+# must not try *one* thing for ever and never reach the rest of the list.
+max_attempts = 3

@@ -114,12 +114,73 @@ In v1 those lines are a branch in `session/run.ts`, 400 lines from the step that
 again with extra indirection. A step still cannot act on its own authority, since these route
 through the same gatekeeper and plan writer.
 
-### 7. The pipeline is an ordered array
+### 7. Background work the agent asks for
+
+v1 has three background mechanisms — maintenance, continuation, curiosity pursuit — and **every
+gate in all three is a countable fact decided by the harness**: a threshold crossed, a question
+resurfaced twice, an iteration that closed an item. That was a deliberate and largely correct
+choice, since the alternative was asking a model "have you made progress?", which always answers
+yes.
+
+The consequence nobody designed is that **the agent never decides to do anything.** It does
+housekeeping when a counter says housekeeping is due. Even curiosity, the one mechanism that
+looks like wanting something, only pursues a question after it has resurfaced twice by embedding
+similarity — and the questions are harvested mechanically from step output.
+
+v2 splits the decision from the accounting:
+
+- **What to work on is proposed by a step.** `schedule_work` closes every session and is asked
+  what is worth doing next. That is a genuine judgement, and it lives in a prompt you can tweak.
+- **Whether it runs stays countable.** Attempt caps, merging, and yielding to messages are facts.
+
+`work.ts` holds the list. Merging is by concatenation, straight from restructuring.md:
+
+```
+(research:"Do task 1") + (research:"Do task 2") = (research:"Do task 1\nDo task 2")
+```
+
+Chosen over v1's embedding-similarity merge for curiosities, which carries an unmeasured
+threshold whose usable band is specific to the embedding model. Grouping by kind has no constant
+in it at all.
+
+**The closing rule is `max_attempts`,** and it is the guard the whole thing rests on. v1's `plan`
+earned `fulfilled`/`abandoned` because a task list nothing can close becomes a standing
+instruction the agent cannot escape. Three attempts, then the item is dropped. Generous, because
+a machine that can sit and think all day should try a hard thing more than once; finite, because
+it must not try *one* thing for ever and never reach the rest of the list.
+
+**Messages always win.** `nextWork` returns nothing while anything is queued, checked again in
+the sweep after the turn is acquired. That single rule is what makes running background work
+indefinitely safe: an agent that is thinking must still answer the door.
+
+### 8. The pipeline is an ordered array
 
 `pipeline.ts` lists the steps in the order they run, each with a `when` predicate over countable
 facts. **`restate` runs before `reflect`, reversing v1.** Reflection then reads a settled statement
 of the task instead of inferring one from a transcript — which is what the reported reflect
 failures look like. Swapping two steps is moving two lines.
+
+## Can v1 and v2 background coexist?
+
+**Yes, and no rewrite is needed** — because the sweep already separates the two things that
+matter. `instance/run.ts` answers "is every channel quiet?" generically, and then asks a
+*separate* question: "is there anything to do?" Only the second half is v1-specific, and it lives
+in `pendingMaintenance`.
+
+So the v2 branch sits beside the v1 one in the same `sweep()`, sharing the idle gate, the turn,
+and the per-channel drain marker. They are **alternatives, not layers**: an instance on `v2 =
+true` runs the work list, an instance without it runs maintenance. Nothing had to move.
+
+The one thing that is genuinely separate is the background *session*. `background.ts` does not go
+through `runSession`, because a background run has no message, no reply path, no supervisor and
+no verdict — threading a fourth trigger kind through 1,600 lines that assume a channel exchange
+would be the rewrite this folder exists to avoid. The session *directory* is shared, which is the
+part that matters for reading results.
+
+**Attempts are recorded before the work runs, not after.** A session that dies with the daemon
+would otherwise leave the attempt uncounted, and an item that can kill the process would be
+retried for ever. That is the one shape that turns "background work never finishing" from
+acceptable into a loop.
 
 ## Layout
 
@@ -133,21 +194,35 @@ failures look like. Swapping two steps is moving two lines.
 | `steps/restate.ts`, `steps/reflect.ts` | two steps in the new style |
 | `pipeline.ts` | the ordered message pipeline |
 | `run.ts` | the session loop — reuses v1's `callModel` and role table |
+| `work.ts` | the work list: merge, drain, attempt cap |
+| `workStore.ts` | the list on disk, per instance |
+| `background.ts` | one background session |
+| `steps/scheduleWork.ts` | the agent deciding what to do next |
+| `steps/work.ts` | doing one item |
 | `bridge.ts` | adapts v1's session values into `StepInput` |
 | `../../test/v2compose.test.ts` | 18 tests over composition |
 | `../../test/v2flag.test.ts` | 6 tests that the flag routes and v1 is unaffected |
+| `../../test/v2background.test.ts` | 24 tests over the work list and background steps |
 
 ## Status
 
-Typechecks under `erasableSyntaxOnly`; 24 tests pass across `v2compose` and `v2flag`; v1's own
-behaviour is unchanged, asserted by a test that the v1 ordering still holds with the flag off.
+Typechecks under `erasableSyntaxOnly`; 48 tests pass across `v2compose`, `v2flag` and
+`v2background`; v1's own behaviour is unchanged, asserted by a test that the v1 ordering still
+holds with the flag off. Full suite 525 passing, against 3 failures that pre-date this folder.
 
 **Not built yet**, deliberately — these are the parts that should reuse v1 rather than be
 reinvented, and they only need writing once the composition above is settled:
 
-- **`respond`.** The pipeline is `restate` and `reflect`, so a v2 session composes prompts and
-  sends no reply. An instance on `v2 = true` is therefore a prompt-composition comparison, not a
-  conversational agent — do not point one at a channel where somebody is waiting for an answer.
+- **`respond`.** The message pipeline is `restate`, `reflect` and `schedule_work`, so a v2
+  session composes prompts and sends no reply. An instance on `v2 = true` is therefore a
+  composition comparison, not a conversational agent — do not point one at a channel where
+  somebody is waiting for an answer.
+- **Tools on the working step.** `work` currently reasons from what it already has; `research`
+  and `write` want the file and knowledge tools v1 already defines, which is a `toolLoop` call in
+  `run.ts` rather than anything new.
+- **Escalation into a plan.** An item that keeps coming back should become a plan, as v1's
+  curiosity does at `escalate_after`. The item records its originating channel precisely so that
+  plan can be filed in the right place.
 - **Maintenance and continuation triggers.** The flag routes message sessions only; those still
   run v1, because silently doing nothing on them would look like a wedged daemon.
 - **Per-section token budgets.** v1 has them per named block; the positional equivalent is

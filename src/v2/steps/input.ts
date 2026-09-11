@@ -1,4 +1,5 @@
 import type { Principal } from "../compose/fragments.ts";
+import type { WorkList } from "../work.ts";
 
 /**
  * Everything a step may read, as typed values rather than pre-rendered
@@ -45,6 +46,20 @@ export interface StepInput {
 
   /** The channel's durable plan, when one is running. */
   plan?: { goal: string; outstanding: readonly string[] };
+
+  /**
+   * Background work already queued.
+   *
+   * Read by `schedule_work` so it does not propose the same thing every
+   * session, and by a working step so it knows what it is doing.
+   */
+  pendingWork?: WorkList;
+
+  /** The item a background session is working on. Absent on a message session. */
+  currentWork?: { kind: string; task: string; attempts: number };
+
+  /** The agent's cross-channel background thinking, latest revision only. */
+  thinking?: string;
 }
 
 /** Sealed output of one earlier step this session, if it ran. */

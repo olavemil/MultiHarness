@@ -117,7 +117,9 @@ describe("steps compose their whole prompt", () => {
 describe("pipeline order is explicit", () => {
   it("runs restate before reflect", () => {
     const names = onMessage.map((s) => s.step.name);
-    expect(names).toEqual(["restate", "reflect"]);
+    expect(names).toEqual(["restate", "reflect", "schedule_work"]);
+    // The ordering the experiment exists to test, asserted as a relation so
+    // adding a step later cannot make it pass vacuously.
     expect(names.indexOf("restate")).toBeLessThan(names.indexOf("reflect"));
   });
 
@@ -129,10 +131,15 @@ describe("pipeline order is explicit", () => {
       prior: { review: "went ok" },
     });
 
-    expect(onMessage.filter((s) => s.when?.(first) ?? true).map((s) => s.step.name)).toEqual([]);
+    // A first message in a channel needs no restatement and has nothing to
+    // reflect on; the agent is still asked what it wants to do next.
+    expect(onMessage.filter((s) => s.when?.(first) ?? true).map((s) => s.step.name)).toEqual([
+      "schedule_work",
+    ]);
     expect(onMessage.filter((s) => s.when?.(running) ?? true).map((s) => s.step.name)).toEqual([
       "restate",
       "reflect",
+      "schedule_work",
     ]);
   });
 });
@@ -151,12 +158,15 @@ describe("effects are declared on the step", () => {
         impression: "wants short answers",
       },
       {
-        impression: (t) => impressions.push(t),
+        impression: (t) => {
+          impressions.push(t);
+        },
         knowledge: () => {},
         requeue: () => {},
         note: (k, v) => {
           notes[k] = v;
         },
+        work: () => {},
       },
     );
 
@@ -167,10 +177,13 @@ describe("effects are declared on the step", () => {
   it("writes nothing when there is nothing to record", async () => {
     const impressions: string[] = [];
     await reflect.apply?.(reflect.fallback(), {
-      impression: (t) => impressions.push(t),
+      impression: (t) => {
+        impressions.push(t);
+      },
       knowledge: () => {},
       requeue: () => {},
       note: () => {},
+      work: () => {},
     });
     expect(impressions).toEqual([]);
   });

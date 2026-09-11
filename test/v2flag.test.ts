@@ -36,6 +36,14 @@ const RESTATE = reply(
   }),
 );
 
+const NO_WORK = reply(
+  JSON.stringify({
+    anythingWorthDoing: false,
+    reason: "The question was answered; nothing is left over.",
+    work: [],
+  }),
+);
+
 const REFLECT = reply(
   JSON.stringify({
     assessment: "A new question; it says nothing about the last answer.",
@@ -126,17 +134,17 @@ describe("the v2 flag", () => {
   });
 
   it("runs the v2 pipeline when on, in the declared order", async () => {
-    const { result } = await runWith(true, [RESTATE, REFLECT]);
+    const { result } = await runWith(true, [RESTATE, REFLECT, NO_WORK]);
 
     // restate before reflect — the ordering the experiment exists to test.
-    expect(result.completed.map((s) => s.name)).toEqual(["restate", "reflect"]);
+    expect(result.completed.map((s) => s.name)).toEqual(["restate", "reflect", "schedule_work"]);
     expect(result.completed.map((s) => s.name).indexOf("restate")).toBeLessThan(
       result.completed.map((s) => s.name).indexOf("reflect"),
     );
   });
 
   it("seals v2 output into the same session directory as v1", async () => {
-    const { result } = await runWith(true, [RESTATE, REFLECT]);
+    const { result } = await runWith(true, [RESTATE, REFLECT, NO_WORK]);
 
     const request = await readFile(path.join(result.session.dir, "request.md"), "utf8");
     const reflection = await readFile(path.join(result.session.dir, "reflection.md"), "utf8");
@@ -146,12 +154,12 @@ describe("the v2 flag", () => {
   });
 
   it("sends a prompt carrying no template variables and no placeholder prose", async () => {
-    const { server } = await runWith(true, [RESTATE, REFLECT]);
+    const { server } = await runWith(true, [RESTATE, REFLECT, NO_WORK]);
 
     const prompts = server.requests
       .filter((r) => r.path === "/api/chat")
       .map((r) => String(r.body.messages?.at(-1)?.content ?? ""));
-    expect(prompts).toHaveLength(2);
+    expect(prompts).toHaveLength(3);
 
     for (const prompt of prompts) {
       expect(prompt).not.toMatch(/\$\{/);
@@ -160,12 +168,13 @@ describe("the v2 flag", () => {
   });
 
   it("gives reflect the restatement that restate just sealed", async () => {
-    const { server } = await runWith(true, [RESTATE, REFLECT]);
+    const { server } = await runWith(true, [RESTATE, REFLECT, NO_WORK]);
 
+    // Second of three now: restate, reflect, schedule_work.
     const reflectPrompt = String(
       server.requests
         .filter((r) => r.path === "/api/chat")
-        .at(-1)?.body.messages?.at(-1)?.content ?? "",
+        .at(1)?.body.messages?.at(-1)?.content ?? "",
     );
     expect(reflectPrompt).toContain("## What it is asking");
     expect(reflectPrompt).toContain("Whether the importer retries on failure.");

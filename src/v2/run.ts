@@ -3,6 +3,8 @@ import { callModel, type CallTrace } from "../model/call.ts";
 import { hostFor, resolveStepModel } from "../model/roles.ts";
 import { compose } from "./compose/section.ts";
 import { onMessage, type Stage } from "./pipeline.ts";
+import { WORK_KINDS } from "./values.ts";
+import type { WorkItem, WorkKind } from "./work.ts";
 import type { StepInput } from "./steps/input.ts";
 import type { Effects } from "./steps/types.ts";
 
@@ -26,6 +28,14 @@ export interface V2Result {
   /** Values steps recorded for each other via `fx.note`. */
   notes: Record<string, string>;
   impressions: string[];
+  /**
+   * Background work the session proposed.
+   *
+   * Returned rather than queued here: the list is per instance and outlives any
+   * one session, and the caller owns it — the same arrangement as v1 returning
+   * `initiatives` for the daemon to deliver.
+   */
+  proposed: Omit<WorkItem, "attempts">[];
   durationMs: number;
 }
 
@@ -46,6 +56,9 @@ export interface V2Options {
   pipeline?: readonly Stage<StepInput>[];
   signal?: AbortSignal | undefined;
   onProgress?: ((line: string) => void) | undefined;
+  /** Recorded on proposed work, so a stale item traces back to its session. */
+  sessionId?: string | undefined;
+  channelId?: string | undefined;
 }
 
 export async function runV2Session(opts: V2Options): Promise<V2Result> {
@@ -56,6 +69,7 @@ export async function runV2Session(opts: V2Options): Promise<V2Result> {
   const steps: CompletedV2Step[] = [];
   const notes: Record<string, string> = {};
   const impressions: string[] = [];
+  const proposed: Omit<WorkItem, "attempts">[] = [];
 
   // Rebuilt each iteration so a step sees what earlier steps sealed. This is
   // the only mutable state in the loop, against v1's ~30 closure variables —
@@ -72,6 +86,25 @@ export async function runV2Session(opts: V2Options): Promise<V2Result> {
     requeue: () => {},
     note: (key, value) => {
       notes[key] = value;
+    },
+    work: (kind, task) => {
+      // Constrained decoding already bounds this, but the harness is what
+      // dispatches the item and an unknown kind would sit in the list for ever
+      // being skipped. Refused loudly rather than stored.
+      if (!(WORK_KINDS as readonly string[]).includes(kind)) {
+        opts.onProgress?.(`v2: ignoring work of unknown kind "${kind}"`);
+        return;
+      }
+      if (!task.trim()) return;
+      proposed.push({
+        kind: kind as WorkKind,
+        task: task.trim(),
+        origin: {
+          session: opts.sessionId ?? "",
+          channelId: opts.channelId ?? "",
+          at: new Date().toISOString(),
+        },
+      });
     },
   };
 
@@ -107,5 +140,5 @@ export async function runV2Session(opts: V2Options): Promise<V2Result> {
     input = { ...input, completed: [...input.completed, { step: step.name, content }] };
   }
 
-  return { steps, notes, impressions, durationMs: Date.now() - startedAt };
+  return { steps, notes, impressions, proposed, durationMs: Date.now() - startedAt };
 }

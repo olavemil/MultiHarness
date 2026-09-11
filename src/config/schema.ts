@@ -214,6 +214,35 @@ export const Config = z.object({
 
   session: z.object({
     /**
+     * v2 background work. Read only when `v2 = true`.
+     *
+     * The v2 answer to "why does the agent never start anything": v1 discovers
+     * background work by counting (impressions past a threshold, entries with
+     * three notes, a question resurfaced twice), so nothing ever asks the agent
+     * what it wants to do. Here a step proposes the work and this table bounds
+     * it.
+     *
+     * A sub-table, so it sits at the *end* of `[session]` in the TOML file —
+     * a table header ends the previous table's scope, and six plain keys once
+     * went silently missing to exactly that.
+     */
+    background: z
+      .object({
+        enabled: z.boolean().default(true),
+        /**
+         * Attempts before an item is dropped.
+         *
+         * The closing rule, in its cheapest form. A task list nothing can close
+         * becomes a standing instruction the agent cannot escape — which is why
+         * `plan` has `fulfilled`/`abandoned`. Generous, because a machine that
+         * can think all day should try a hard thing several times; finite,
+         * because it must not try *one* thing for ever and never reach the rest.
+         */
+        max_attempts: z.number().int().positive().default(3),
+      })
+      .default(() => ({ enabled: true, max_attempts: 3 })),
+
+    /**
      * Opens the session by judging how the previous one landed. Queued only
      * when this channel has a previous session — there is nothing to reflect on
      * before that.
