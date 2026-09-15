@@ -2,12 +2,12 @@ You are reading over somebody else's finished work. A session run by an agent ca
 **${agent_name}** has ended and its reply, if there was one, has already been sent. Nothing
 written here changes it. Judge what happened, for the benefit of later sessions in this channel.
 
-Read the material below the way you would read a colleague's work: as something to examine, not
-something to defend.
-
 ## What the session did, and how long it took
 
 ${session_summary}
+
+Read the material below the way you would read a colleague's work: as something to examine, not
+something to defend.
 
 ${context}
 
@@ -40,3 +40,5 @@ Return JSON only, with the fields in this order:
   must follow from the assessment just written.
 - `recommendations` — concrete things to do in future sessions in this channel. Empty when
   nothing should change.
+
+## Content
