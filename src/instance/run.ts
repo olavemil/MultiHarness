@@ -7,6 +7,9 @@ import { continuationTrigger, maintenanceTrigger, messageTrigger } from "../core
 import { detectMention } from "../core/mentions.ts";
 import { interjectDelay } from "../core/participation.ts";
 import { pendingMaintenance, type MaintenanceWork } from "../session/maintenance.ts";
+import { runV2Background } from "../v2/background.ts";
+import { loadWorkList, saveWorkList } from "../v2/workStore.ts";
+import { addWork, completeWork, nextWork, recordAttempt } from "../v2/work.ts";
 import { eligibleTargets, type InitiativeTarget } from "../core/initiative.ts";
 import { rememberChannel, surveyChannels } from "../store/channelRegistry.ts";
 import { lastPerTarget, loadInitiative, recordInitiative } from "../store/initiativeStore.ts";
@@ -681,8 +684,108 @@ export async function startInstance(
    * identity summary while a session read it would be exactly the race the
    * per-channel actor exists to prevent.
    */
+  /**
+   * One iteration of v2 background work, when this instance is on the flag.
+   *
+   * **The sweep's own structure is shared and the work discovery is not**, which
+   * is what lets the two coexist. "Is everything quiet, and is there anything to
+   * do?" is the same question for both; what differs is who answers the second
+   * half — `pendingMaintenance` counts thresholds, and the v2 list holds what
+   * the agent said it wanted. So this sits beside the v1 branch rather than
+   * replacing it, and an instance runs one or the other.
+   *
+   * Runs under the originating channel's drain, for the same reason v1
+   * maintenance does: per-channel history has one writer.
+   */
+  async function sweepV2(): Promise<void> {
+    const list = await loadWorkList(paths);
+    const policy = { maxAttempts: config.session.background.max_attempts };
+
+    // Messages always win. Checked here as well as in `nextWork`, because
+    // between the two the sweep may have been waiting on the turn.
+    const busy = [...channels.values()].some((c) => c.draining || c.inbox.length > 0);
+    const item = nextWork(list, policy, busy);
+    if (!item) return;
+
+    const channelId = item.origin.channelId || [...channels.keys()][0];
+    if (!channelId) return;
+    const channel = channelOf(channelId);
+    const identity = channel.lastIdentity;
+    if (!identity) return;
+
+    // Recorded *before* the work runs, not after. A session that dies with the
+    // daemon would otherwise leave the attempt uncounted, and an item that can
+    // kill the process would be retried for ever — the one shape that turns
+    // "background work never finishing" from acceptable into a loop.
+    await saveWorkList(paths, recordAttempt(list, item, policy));
+
+    const running = (async () => {
+      try {
+        const result = await withTurn(
+          async () =>
+            runV2Background({
+              config,
+              paths,
+              channelId,
+              identity,
+              item,
+              onProgress: (note) => adapter.status?.(channelId, note),
+            }),
+          { size: config.session.turn.size },
+        );
+
+        // Reloaded rather than reusing `list`: a message session may have
+        // proposed work while this one ran, and writing a stale list back would
+        // drop it.
+        const after = await loadWorkList(paths);
+        const settled = result.finished
+          ? completeWork(after, after.items.find((i) => i.task === item.task) ?? item)
+          : after;
+        await saveWorkList(paths, addWork(settled, result.proposed));
+
+        log.log(
+          `background session ${result.session.id} (${item.kind}): ` +
+            `${result.finished ? "finished" : "continuing"}`,
+        );
+      } catch (cause) {
+        const detail = cause instanceof Error ? cause.message : String(cause);
+        log.error(`background work failed: ${detail}`);
+      } finally {
+        channel.draining = undefined;
+        channel.lastActivity = Date.now();
+      }
+    })();
+
+    channel.draining = running;
+    await running;
+  }
+
   function sweep(): void {
     const { enabled, idle_ms } = config.session.maintenance;
+
+    // The v2 branch. Gated on the same global idle check below, and on its own
+    // config, so an instance on neither does nothing and an instance on both
+    // would run v2 only — they are alternatives, not layers.
+    if (config.v2 && config.session.background.enabled) {
+      if (maintenanceBatchRunning) return;
+      const now = Date.now();
+      const allIdle = [...channels.values()].every(
+        (c) => !c.draining && c.inbox.length === 0 && now - c.lastActivity >= idle_ms,
+      );
+      if (!allIdle) return;
+
+      maintenanceBatchRunning = true;
+      void sweepV2()
+        .catch((cause: unknown) => {
+          const detail = cause instanceof Error ? cause.message : String(cause);
+          log.error(`background sweep failed: ${detail}`);
+        })
+        .finally(() => {
+          maintenanceBatchRunning = false;
+        });
+      return;
+    }
+
     if (!enabled) return;
     if (maintenanceBatchRunning) return;
 

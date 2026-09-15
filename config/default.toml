@@ -6,6 +6,19 @@
 
 working_dir = "~/.multiharness"
 
+# Run this instance's sessions on the v2 composition pipeline (src/v2/).
+#
+# The one flag deliberately shipped *off*, against the standing "everything
+# ships enabled" rule. That rule exists so features get exercised; here the
+# purpose is running v1 and v2 side by side on live traffic, and defaulting it
+# on would leave nothing to compare against.
+#
+# Per instance: put `v2 = true` in an instance's own config.toml. It must sit
+# above the first [table] header there, like this one — a key written after a
+# table header belongs to that table, which is how six [session] keys once went
+# silently missing.
+v2 = false
+
 # Who the agent is. Without this, no step can distinguish a message addressed to
 # the agent from one addressed to another participant in the same channel.
 [agent]
@@ -797,3 +810,25 @@ crowd_min = 0.2
 # message that named the agent. 0 disables it.
 interject_delay_ms = 4000
 max = 1.0
+
+# v2 background work. Read only when `v2 = true` at the top of this file.
+#
+# The v2 answer to "why does the agent never start anything". v1 discovers
+# background work by counting — impressions past a threshold, entries with three
+# notes, a question resurfaced twice — so nothing anywhere asks the agent what it
+# wants to do. Here a step proposes the work and these two keys bound it.
+#
+# A sub-table, so it sits at the *end* of [session] like the others: a table
+# header ends the previous table's scope, and six plain keys once went silently
+# missing to exactly that.
+[session.background]
+enabled = true
+
+# Attempts before an item is dropped.
+#
+# The closing rule, in its cheapest form. A task list nothing can close becomes a
+# standing instruction the agent cannot escape, which is why `plan` has
+# `fulfilled` and `abandoned`. Generous, because a machine that can afford to sit
+# and think all day should try a hard thing more than once; finite, because it
+# must not try *one* thing for ever and never reach the rest of the list.
+max_attempts = 3

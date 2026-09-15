@@ -194,7 +194,54 @@ export const Config = z.object({
     budgets: z.record(z.string(), z.number().int().positive()).default({}),
   }),
 
+  /**
+   * Run this instance's sessions on the v2 composition pipeline (`src/v2/`).
+   *
+   * **Per instance, and off in the repo default**, which is the point: two
+   * agents in one daemon can run the two pipelines against the same channels,
+   * so `restate → reflect` can be compared against `reflect → read` on live
+   * traffic rather than argued about. An instance opts in by putting
+   * `v2 = true` in its own `config.toml`.
+   *
+   * This is the one flag that is deliberately *not* on by default, against the
+   * repo's standing "everything ships enabled" rule. That rule exists so
+   * features get exercised; here the whole purpose is running the two side by
+   * side, and defaulting it on would leave nothing to compare against.
+   *
+   * Delete this flag, and `src/v2/`, when the experiment concludes either way.
+   */
+  v2: z.boolean().default(false),
+
   session: z.object({
+    /**
+     * v2 background work. Read only when `v2 = true`.
+     *
+     * The v2 answer to "why does the agent never start anything": v1 discovers
+     * background work by counting (impressions past a threshold, entries with
+     * three notes, a question resurfaced twice), so nothing ever asks the agent
+     * what it wants to do. Here a step proposes the work and this table bounds
+     * it.
+     *
+     * A sub-table, so it sits at the *end* of `[session]` in the TOML file —
+     * a table header ends the previous table's scope, and six plain keys once
+     * went silently missing to exactly that.
+     */
+    background: z
+      .object({
+        enabled: z.boolean().default(true),
+        /**
+         * Attempts before an item is dropped.
+         *
+         * The closing rule, in its cheapest form. A task list nothing can close
+         * becomes a standing instruction the agent cannot escape — which is why
+         * `plan` has `fulfilled`/`abandoned`. Generous, because a machine that
+         * can think all day should try a hard thing several times; finite,
+         * because it must not try *one* thing for ever and never reach the rest.
+         */
+        max_attempts: z.number().int().positive().default(3),
+      })
+      .default(() => ({ enabled: true, max_attempts: 3 })),
+
     /**
      * Opens the session by judging how the previous one landed. Queued only
      * when this channel has a previous session — there is nothing to reflect on

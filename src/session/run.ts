@@ -76,6 +76,9 @@ import type { Response as StepResponse } from "../steps/respond.ts";
 import type { Paths } from "../store/paths.ts";
 import type { StoredReaction } from "../store/reactionStore.ts";
 import { createSession, sealStep, workingFilePath, type SessionHandle } from "../store/sessionStore.ts";
+import { runV2Session } from "../v2/run.ts";
+import { toStepInput } from "../v2/bridge.ts";
+import type { StepInput as V2StepInput } from "../v2/steps/input.ts";
 import { writeStepTrace } from "../store/trace.ts";
 
 export interface RunSessionOptions {
@@ -450,6 +453,32 @@ export async function runSession(opts: RunSessionOptions): Promise<SessionResult
   // Read once per session, before anything this session says is appended, so it
   // is genuinely the *previous* contribution rather than this session's own.
   const contribution = await lastContribution(paths, channelId);
+
+  // The v2 experiment, opted into per instance by `v2 = true`. Branching here
+  // rather than at the three call sites in `instance/run.ts` keeps the seam to
+  // one `if`: everything the alternate pipeline needs — prior session, history,
+  // impressions, last contribution — has just been resolved above, and the
+  // daemon's plumbing is untouched because a `SessionResult` still comes back.
+  //
+  // Message sessions only. A maintenance or continuation run has no v2
+  // counterpart yet, and silently doing nothing on those would look like the
+  // daemon being wedged.
+  if (config.v2 && trigger.kind === "message" && message) {
+    return runV2(opts, {
+      session,
+      completed,
+      input: toStepInput({
+        config,
+        channelName: channelId,
+        identity,
+        message,
+        history,
+        prior,
+        impressions,
+        lastContribution: contribution,
+      }),
+    });
+  }
 
   const blockInput = (): BlockInput => ({
     message,
@@ -1381,6 +1410,45 @@ interface ExecuteContext extends RunSessionOptions {
  * Tools reach the knowledge store and nothing else. The database is opened on
  * first use, so a step without knowledge tools never touches sqlite.
  */
+/**
+ * Runs the v2 pipeline and returns a v1 `SessionResult`, so nothing downstream
+ * has to know which pipeline ran.
+ *
+ * Output is sealed into the same session directory by the same `sealStep`, and
+ * the rendered prompt is written beside it — the point of the experiment is
+ * comparing prompts, so the prompt has to be on disk.
+ */
+async function runV2(
+  opts: RunSessionOptions,
+  args: { session: SessionHandle; completed: CompletedStep[]; input: V2StepInput },
+): Promise<SessionResult> {
+  const { session, completed } = args;
+
+  const result = await runV2Session({
+    config: opts.config,
+    input: args.input,
+    ...(opts.signal ? { signal: opts.signal } : {}),
+    ...(opts.onProgress ? { onProgress: opts.onProgress } : {}),
+  });
+
+  for (const step of result.steps) {
+    const sealed = await sealStep(session, step.outputFile, step.content);
+    completed.push({
+      name: step.step,
+      topic: "",
+      outputFile: sealed.file,
+      content: step.content,
+      durationMs: step.trace.durationMs,
+      fellBack: step.trace.fellBack,
+    });
+  }
+
+  // No reply: the v2 pipeline is `restate` and `reflect` with no `respond` yet,
+  // so a session on it is a prompt-composition comparison rather than a
+  // conversation. Returning no reply is honest; inventing one would not be.
+  return { session, completed };
+}
+
 function toolContext(ctx: ExecuteContext, stepName: string): ToolContext {
   let db: ReturnType<typeof openKnowledgeDb> | undefined;
   return {
